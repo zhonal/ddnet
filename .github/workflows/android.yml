@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3
+          sudo apt-get install -y cmake ninja-build python3 glslang-tools
       - name: Build APK
         run: scripts/android/cmake_android.sh all DDNet org.ddnet.client Release build-android
       - uses: actions/upload-artifact@v4
