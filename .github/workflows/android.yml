@@ -20,6 +20,10 @@ jobs:
         run: |
           rustup target add armv7-linux-androideabi aarch64-linux-android i686-linux-android x86_64-linux-android
           cargo install cargo-ndk --locked
+      - name: Create debug keystore
+        run: |
+          mkdir -p ~/.android
+          keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
       - name: Build APK
         run: scripts/android/cmake_android.sh all DDNet org.ddnet.client Release build-android
       - uses: actions/upload-artifact@v4
