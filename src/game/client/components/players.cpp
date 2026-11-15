@@ -473,7 +473,74 @@ void CPlayers::RenderHookCollLine(
 		Graphics()->LinesEnd();
 	}
 }
+static int s_aKaguneReach[MAX_CLIENTS];
+static int s_aKaguneHookState[MAX_CLIENTS];
 
+static float KaguneBright(float v)
+{
+	return v > 1.0f ? 1.0f : v;
+}
+
+static void KaguneDrawTentacle(IGraphics *pGraphics, vec2 Base, vec2 Tip, float Bend, float Thick, float Wave, float Time, float Phase, float Alpha, ColorRGBA Color)
+{
+	constexpr int Segs = 16;
+	const vec2 Delta = Tip - Base;
+	if(length(Delta) < 1.0f)
+		return;
+	const vec2 Perp = normalize(vec2(-Delta.y, Delta.x));
+	const vec2 Ctrl = (Base + Tip) * 0.5f + Perp * Bend;
+	vec2 aPts[Segs + 1];
+	float aWidth[Segs + 1];
+	for(int i = 0; i <= Segs; i++)
+	{
+		const float t = i / (float)Segs;
+		const float u = 1.0f - t;
+		const float Sway = sinf(Time * 3.5f + t * 4.0f + Phase) * Wave * t;
+		aPts[i] = Base * (u * u) + Ctrl * (2.0f * u * t) + Tip * (t * t) + Perp * Sway;
+		const float Ramp = t < 0.2f ? 0.55f + 0.45f * (t / 0.2f) : 1.0f;
+		aWidth[i] = Thick * u * Ramp + 0.4f;
+	}
+	for(int Pass = 0; Pass < 3; Pass++)
+	{
+		pGraphics->TextureClear();
+		pGraphics->QuadsBegin();
+		float Mul = 1.0f;
+		if(Pass == 0)
+		{
+			pGraphics->SetColor(Color.r * 0.3f, Color.g * 0.3f, Color.b * 0.3f, Alpha);
+			Mul = 1.5f;
+		}
+		else if(Pass == 1)
+			pGraphics->SetColor(Color.r, Color.g, Color.b, Alpha);
+		else
+			pGraphics->SetColor(KaguneBright(Color.r + 0.45f), KaguneBright(Color.g + 0.45f), KaguneBright(Color.b + 0.45f), Alpha * 0.85f);
+		for(int i = 0; i < Segs; i++)
+		{
+			const vec2 D = aPts[i + 1] - aPts[i];
+			if(length(D) < 0.001f)
+				continue;
+			const vec2 N = normalize(vec2(-D.y, D.x));
+			vec2 P0 = aPts[i];
+			vec2 P1 = aPts[i + 1];
+			float w0 = aWidth[i] * Mul;
+			float w1 = aWidth[i + 1] * Mul;
+			if(Pass == 2)
+			{
+				P0 = P0 + N * (aWidth[i] * 0.35f);
+				P1 = P1 + N * (aWidth[i + 1] * 0.35f);
+				w0 = aWidth[i] * 0.18f;
+				w1 = aWidth[i + 1] * 0.18f;
+			}
+			IGraphics::CFreeformItem Freeform(
+				P0.x - N.x * w0, P0.y - N.y * w0,
+				P0.x + N.x * w0, P0.y + N.y * w0,
+				P1.x - N.x * w1, P1.y - N.y * w1,
+				P1.x + N.x * w1, P1.y + N.y * w1);
+			pGraphics->QuadsDrawFreeform(&Freeform, 1);
+		}
+		pGraphics->QuadsEnd();
+	}
+}
 void CPlayers::RenderHook(
 	const CScreenRect &ScreenRect,
 	const CNetObj_Character *pPrevChar,
@@ -482,6 +549,44 @@ void CPlayers::RenderHook(
 	int ClientId,
 	float Intra)
 {
+		if(g_Config.m_ClKagune && ClientId >= 0 && ClientId < MAX_CLIENTS)
+	{
+		const int FxCount = g_Config.m_ClKaguneCount;
+		if(pPlayerChar->m_HookState > 0 && s_aKaguneHookState[ClientId] <= 0)
+		{
+			unsigned S = (unsigned)(Client()->LocalTime() * 1000.0f) * 2654435761u + (unsigned)ClientId * 97u;
+			S ^= S >> 15;
+			S *= 2246822519u;
+			S ^= S >> 13;
+			int Mask = 0;
+			for(int k = 0; k < FxCount; k++)
+				if(((S >> (k * 3 + 1)) & 7) < 5)
+					Mask |= 1 << k;
+			Mask |= 1 << ((S >> 27) % FxCount);
+			s_aKaguneReach[ClientId] = Mask;
+		}
+		s_aKaguneHookState[ClientId] = pPlayerChar->m_HookState;
+
+		if(ClientId == GameClient()->m_Snap.m_LocalClientId)
+		{
+			const float FxIntra = GameClient()->m_aClients[ClientId].m_IsPredicted ? Client()->PredIntraGameTick(g_Config.m_ClDummy) : Client()->IntraGameTick(g_Config.m_ClDummy);
+			const vec2 FxPos = mix(vec2(pPrevChar->m_X, pPrevChar->m_Y), vec2(pPlayerChar->m_X, pPlayerChar->m_Y), FxIntra);
+			const float FxAlpha = GameClient()->IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+			const ColorRGBA FxColor(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
+			const float FxTime = Client()->LocalTime();
+			const bool FxHooking = pPlayerChar->m_HookState > 0;
+			for(int k = 0; k < FxCount; k++)
+			{
+				if(FxHooking && ((s_aKaguneReach[ClientId] >> k) & 1))
+					continue;
+				const float Side = FxCount > 1 ? (k / (float)(FxCount - 1)) * 2.0f - 1.0f : 0.0f;
+				const float Angle = -pi / 2.0f + Side * 1.3f + sinf(FxTime * 1.5f + k * 1.7f) * 0.08f;
+				const float Len = g_Config.m_ClKaguneLen * (0.7f + 0.3f * (0.5f + 0.5f * sinf(k * 2.3f + 1.0f)));
+				const vec2 FxTip = FxPos + vec2(cosf(Angle), sinf(Angle)) * Len;
+				KaguneDrawTentacle(Graphics(), FxPos, FxTip, Side * Len * 0.35f, (float)g_Config.m_ClKaguneWidth, (float)g_Config.m_ClKaguneWave, FxTime, k * 1.7f, FxAlpha, FxColor);
+			}
+		}
+	}
 	if(pPlayerChar->m_HookState <= 0)
 		return;
 
@@ -539,7 +644,7 @@ void CPlayers::RenderHook(
 	// render head
 	int QuadOffset = NUM_WEAPONS * 2 + 2;
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, Alpha);
-	Graphics()->RenderQuadContainerAsSprite(m_WeaponEmoteQuadContainerIndex, QuadOffset, HookPos.x, HookPos.y);
+	if(!g_Config.m_ClKagune)Graphics()->RenderQuadContainerAsSprite(m_WeaponEmoteQuadContainerIndex, QuadOffset, HookPos.x, HookPos.y);
 
 	// render chain
 	++QuadOffset;
@@ -553,7 +658,7 @@ void CPlayers::RenderHook(
 		s_aHookChainRenderInfo[HookChainCount].m_Scale = 1;
 		s_aHookChainRenderInfo[HookChainCount].m_Rotation = angle(Dir) + pi;
 	}
-		if(g_Config.m_ClKagune)
+		if(false)
 	{
 		const ColorRGBA Base(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
 		const vec2 Start = HookPos + Dir * d;
@@ -605,6 +710,22 @@ void CPlayers::RenderHook(
 				}
 			}
 			Graphics()->QuadsEnd();
+		}
+		HookChainCount = 0;
+	}
+		if(g_Config.m_ClKagune && ClientId >= 0 && ClientId < MAX_CLIENTS)
+	{
+		const ColorRGBA FxColor(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
+		const vec2 Start = HookPos + Dir * d;
+		const float FxTime = Client()->LocalTime();
+		const int FxCount = g_Config.m_ClKaguneCount;
+		const float Fan = d * 0.2f > 80.0f ? 80.0f : d * 0.2f;
+		for(int k = 0; k < FxCount; k++)
+		{
+			if(!((s_aKaguneReach[ClientId] >> k) & 1))
+				continue;
+			const float Side = FxCount > 1 ? (k / (float)(FxCount - 1)) * 2.0f - 1.0f : 0.0f;
+			KaguneDrawTentacle(Graphics(), Start, HookPos, Side * Fan, (float)g_Config.m_ClKaguneWidth, (float)g_Config.m_ClKaguneWave * 0.7f, FxTime, k * 1.7f, Alpha, FxColor);
 		}
 		HookChainCount = 0;
 	}
