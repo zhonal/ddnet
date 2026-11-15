@@ -393,6 +393,74 @@ void CEffects::Explosion(vec2 Pos, float Alpha)
 
 void CEffects::HammerHit(vec2 Pos, float Alpha, float Volume)
 {
+		if(g_Config.m_ClHammerFx)
+	{
+		const float Scale = g_Config.m_ClHammerFxSize / 100.0f;
+		const ColorRGBA Color(g_Config.m_ClHammerFxR / 255.0f, g_Config.m_ClHammerFxG / 255.0f, g_Config.m_ClHammerFxB / 255.0f, 1.0f);
+
+		CParticle p;
+		p.SetDefault();
+		p.m_Spr = SPRITE_PART_EXPL01;
+		p.m_Pos = Pos;
+		p.m_LifeSpan = 0.25f;
+		p.m_StartSize = 110.0f * Scale;
+		p.m_EndSize = 0.0f;
+		p.m_Rot = random_angle();
+		p.m_Color = Color;
+		p.m_Color.a = Alpha;
+		p.m_StartAlpha = Alpha;
+		GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+
+		p.SetDefault();
+		p.m_Spr = SPRITE_PART_HIT01;
+		p.m_Pos = Pos;
+		p.m_LifeSpan = 0.3f;
+		p.m_StartSize = 150.0f * Scale;
+		p.m_EndSize = 0.0f;
+		p.m_Rot = random_angle();
+		p.m_Rotspeed = pi;
+		p.m_Color = Color;
+		p.m_Color.a = Alpha;
+		p.m_StartAlpha = Alpha;
+		GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+
+		p.SetDefault();
+		p.m_Spr = SPRITE_PART_AIRJUMP;
+		p.m_Pos = Pos;
+		p.m_LifeSpan = 0.35f;
+		p.m_StartSize = 20.0f * Scale;
+		p.m_EndSize = 140.0f * Scale;
+		p.m_Rot = random_angle();
+		p.m_Color = Color;
+		p.m_Color.a = Alpha;
+		p.m_StartAlpha = Alpha;
+		GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+
+		for(int i = 0; i < 14; i++)
+		{
+			const float Angle = random_angle();
+			const float Speed = (200.0f + random_float() * 350.0f) * Scale;
+			p.SetDefault();
+			p.m_Spr = SPRITE_PART_HIT01;
+			p.m_Pos = Pos;
+			p.m_Vel = vec2(cosf(Angle), sinf(Angle)) * Speed;
+			p.m_LifeSpan = 0.25f + random_float() * 0.25f;
+			p.m_StartSize = (14.0f + random_float() * 14.0f) * Scale;
+			p.m_EndSize = 0.0f;
+			p.m_Rot = random_angle();
+			p.m_Rotspeed = pi * 3.0f;
+			p.m_Friction = 0.85f;
+			p.m_Gravity = 250.0f;
+			p.m_Color = Color;
+			p.m_Color.a = Alpha;
+			p.m_StartAlpha = Alpha;
+			GameClient()->m_Particles.Add(CParticles::GROUP_EXPLOSIONS, &p);
+		}
+
+		if(g_Config.m_SndGame)
+			GameClient()->m_Sounds.PlayAt(CSounds::CHN_WORLD, SOUND_HAMMER_HIT, Volume, Pos);
+		return;
+	}
 	// add the explosion
 	CParticle p;
 	p.SetDefault();
