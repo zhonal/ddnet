@@ -82,6 +82,7 @@ MACRO_CONFIG_INT(ClKaguneB, cl_kagune_b, 25, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SA
 MACRO_CONFIG_INT(ClKaguneWidth, cl_kagune_width, 6, 1, 20, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Kagune tentacle thickness")
 MACRO_CONFIG_INT(ClKaguneCount, cl_kagune_count, 5, 1, 8, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Number of kagune tentacles")
 MACRO_CONFIG_INT(ClKaguneWave, cl_kagune_wave, 14, 0, 50, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Kagune waving amount")
+MACRO_CONFIG_INT(ClKaguneLen, cl_kagune_len, 100, 30, 300, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Kagune resting tentacle length")
 MACRO_CONFIG_INT(ClShowhudHealthAmmo, cl_showhud_healthammo, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Health + Ammo)")
 MACRO_CONFIG_INT(ClShowhudScore, cl_showhud_score, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Score)")
 MACRO_CONFIG_INT(ClShowhudTimer, cl_showhud_timer, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Timer)")
