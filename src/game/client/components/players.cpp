@@ -562,7 +562,7 @@ void CPlayers::RenderHook(
 		const int Count = g_Config.m_ClKaguneCount;
 		const float Thick = (float)g_Config.m_ClKaguneWidth;
 		const float Wave = (float)g_Config.m_ClKaguneWave;
-		const float Fan = minimum(d * 0.2f, 80.0f);
+	    const float Fan = d * 0.2f > 80.0f ? 80.0f : d * 0.2f;
 		constexpr int Segs = 20;
 
 		Graphics()->QuadsSetRotation(0);
