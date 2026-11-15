@@ -70,6 +70,11 @@ MACRO_CONFIG_INT(ClAutoswitchWeapons, cl_autoswitch_weapons, 1, 0, 1, CFGFLAG_CL
 MACRO_CONFIG_INT(ClAutoswitchWeaponsOutOfAmmo, cl_autoswitch_weapons_out_of_ammo, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Auto switch weapon when out of ammo")
 
 MACRO_CONFIG_INT(ClShowhud, cl_showhud, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD")
+MACRO_CONFIG_INT(ClHammerFx, cl_hammer_fx, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Custom hammer hit effect")
+MACRO_CONFIG_INT(ClHammerFxR, cl_hammer_fx_r, 255, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Hammer effect red")
+MACRO_CONFIG_INT(ClHammerFxG, cl_hammer_fx_g, 120, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Hammer effect green")
+MACRO_CONFIG_INT(ClHammerFxB, cl_hammer_fx_b, 20, 0, 255, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Hammer effect blue")
+MACRO_CONFIG_INT(ClHammerFxSize, cl_hammer_fx_size, 100, 25, 300, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Hammer effect size in percent")
 MACRO_CONFIG_INT(ClShowhudHealthAmmo, cl_showhud_healthammo, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Health + Ammo)")
 MACRO_CONFIG_INT(ClShowhudScore, cl_showhud_score, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Score)")
 MACRO_CONFIG_INT(ClShowhudTimer, cl_showhud_timer, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Show ingame HUD (Timer)")
