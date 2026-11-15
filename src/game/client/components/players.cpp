@@ -541,7 +541,178 @@ static void KaguneDrawTentacle(IGraphics *pGraphics, vec2 Base, vec2 Tip, float 
 		pGraphics->QuadsEnd();
 	}
 }
-void CPlayers::RenderHook(
+static vec2 s_aKgTip[8];
+static vec2 s_aKgVel[8];
+static float s_aKgBlend[8];
+static vec2 s_KgHookPos;
+static int s_KgReach = 0;
+static int s_KgPrevHook = 0;
+static float s_KgLast = 0.0f;
+static bool s_KgInit = false;
+
+static float KgBright(float v)
+{
+	return v > 1.0f ? 1.0f : (v < 0.0f ? 0.0f : v);
+}
+
+static float KgNoise(float t, float k)
+{
+	return 0.55f * sinf(t * 0.8f + k * 2.1f) + 0.3f * sinf(t * 1.7f + k * 4.7f + 1.3f) + 0.15f * sinf(t * 3.1f + k * 1.3f + 2.7f);
+}
+
+static float KgRestAngle(int k, int Count, float Time)
+{
+	const int Style = g_Config.m_ClKaguneStyle;
+	const float Side = Count > 1 ? (k / (float)(Count - 1)) * 2.0f - 1.0f : 0.0f;
+	const float Breath = KgNoise(Time * 0.5f, 9.0f);
+	float Angle;
+	if(Style == 1)
+	{
+		Angle = (k / (float)Count) * 2.0f * pi + Time * 0.15f + KgNoise(Time, k * 1.9f) * 0.35f;
+	}
+	else if(Style == 2)
+	{
+		const float Dir = (k % 2 == 0) ? -1.0f : 1.0f;
+		const float Row = (float)(k / 2);
+		Angle = -pi / 2.0f + Dir * (0.55f + Row * 0.32f + 0.12f * Breath) + KgNoise(Time, (float)k) * 0.3f;
+	}
+	else
+	{
+		const float Spread = Style == 3 ? 1.0f : 1.35f;
+		Angle = -pi / 2.0f + Side * (Spread + 0.2f * Breath) + KgNoise(Time, (float)k) * 0.4f;
+	}
+	const float s = sinf(Time * 0.7f + k * 5.3f);
+	if(s > 0.0f)
+	{
+		const float s2 = s * s;
+		Angle += (Side >= 0.0f ? 1.0f : -1.0f) * 0.5f * s2 * s2 * s2;
+	}
+	return Angle;
+}
+
+static void KgDraw(IGraphics *pGraphics, vec2 Base, vec2 Tip, float Slack, float Bend, float Thick, float Wave, float Time, float Phase, bool FreeTip, float Alpha, ColorRGBA Color)
+{
+	constexpr int Segs = 20;
+	const vec2 Delta = Tip - Base;
+	const float d = length(Delta);
+	if(d < 1.0f)
+		return;
+	if(g_Config.m_ClKaguneStyle == 3)
+	{
+		Thick *= 0.5f;
+		Wave *= 1.8f;
+	}
+	const float Shimmer = g_Config.m_ClKaguneShimmer / 100.0f;
+	const vec2 Perp = vec2(-Delta.y, Delta.x) * (1.0f / d);
+	float Extra = Slack - d;
+	if(Extra < 0.0f)
+		Extra = 0.0f;
+	float H = sqrtf(3.0f * d * Extra / 8.0f);
+	if(H > Slack * 0.6f)
+		H = Slack * 0.6f;
+	const float Sign = Bend < 0.0f ? -1.0f : 1.0f;
+	const vec2 Ctrl = (Base + Tip) * 0.5f + Perp * (Bend + Sign * 2.0f * H);
+	vec2 aPts[Segs + 1];
+	float aW[Segs + 1];
+	for(int i = 0; i <= Segs; i++)
+	{
+		const float t = i / (float)Segs;
+		const float u = 1.0f - t;
+		const float Env = FreeTip ? t : sinf(t * pi);
+		const float Sway = sinf(Time * 3.2f + t * 4.5f + Phase) * Wave * (1.0f + H * 0.03f) * Env;
+		aPts[i] = Base * (u * u) + Ctrl * (2.0f * u * t) + Tip * (t * t) + Perp * Sway;
+		aW[i] = Thick * 1.5f * sinf(pi * sqrtf(t)) + 0.35f;
+	}
+	float Gx = Time * 0.6f + Phase * 0.37f;
+	Gx = Gx - (float)(int)Gx;
+
+	for(int Layer = 0; Layer < 4; Layer++)
+	{
+		pGraphics->TextureClear();
+		pGraphics->QuadsBegin();
+		for(int i = 0; i < Segs; i++)
+		{
+			const vec2 D = aPts[i + 1] - aPts[i];
+			if(length(D) < 0.001f)
+				continue;
+			const vec2 N = normalize(vec2(-D.y, D.x));
+			const float t = (i + 0.5f) / (float)Segs;
+			if(Layer == 2 && (t < 0.1f || t > 0.85f))
+				continue;
+			const float W01 = 0.5f + 0.5f * sinf(t * 7.0f - Time * 2.5f + Phase);
+			float Dg = t - Gx;
+			if(Dg < 0.0f)
+				Dg = -Dg;
+			const float Glint = (Dg < 0.15f ? 1.0f - Dg / 0.15f : 0.0f) * Shimmer;
+			vec2 P0 = aPts[i];
+			vec2 P1 = aPts[i + 1];
+			float w0 = aW[i];
+			float w1 = aW[i + 1];
+			if(Layer == 0)
+			{
+				pGraphics->SetColor(Color.r * 0.25f, Color.g * 0.25f, Color.b * 0.25f, Alpha);
+				w0 *= 1.35f;
+				w1 *= 1.35f;
+			}
+			else if(Layer == 1)
+			{
+				const float f = 0.75f + 0.4f * Shimmer * W01;
+				pGraphics->SetColor(
+					KgBright(Color.r * f + 0.25f * Glint),
+					KgBright(Color.g * f + 0.12f * Shimmer * W01 + 0.3f * Glint),
+					KgBright(Color.b * f + 0.1f * Shimmer * (1.0f - W01) + 0.25f * Glint),
+					Alpha);
+			}
+			else if(Layer == 2)
+			{
+				pGraphics->SetColor(Color.r * 0.3f, Color.g * 0.3f, Color.b * 0.3f, Alpha * 0.8f);
+				w0 *= 0.12f;
+				w1 *= 0.12f;
+			}
+			else
+			{
+				pGraphics->SetColor(
+					KgBright(Color.r + 0.4f + 0.3f * Glint),
+					KgBright(Color.g + 0.4f + 0.3f * Glint),
+					KgBright(Color.b + 0.4f + 0.3f * Glint),
+					Alpha * (0.45f + 0.4f * W01));
+				P0 = P0 + N * (aW[i] * 0.38f);
+				P1 = P1 + N * (aW[i + 1] * 0.38f);
+				w0 *= 0.16f;
+				w1 *= 0.16f;
+			}
+			IGraphics::CFreeformItem Freeform(
+				P0.x - N.x * w0, P0.y - N.y * w0,
+				P0.x + N.x * w0, P0.y + N.y * w0,
+				P1.x - N.x * w1, P1.y - N.y * w1,
+				P1.x + N.x * w1, P1.y + N.y * w1);
+			pGraphics->QuadsDrawFreeform(&Freeform, 1);
+		}
+		pGraphics->QuadsEnd();
+	}
+}
+
+static void KgDrawBlend(IGraphics *pGraphics, vec2 Base, vec2 RestTip, float Len, float Bend, int k, float Dt, bool Reach, float Time, float Alpha, ColorRGBA Color)
+{
+	float &Blend = s_aKgBlend[k];
+	const float Target = Reach ? 1.0f : 0.0f;
+	const float Speed = (Reach ? 5.0f : 3.5f) * (0.85f + 0.3f * (float)((k * 37) % 7) / 6.0f);
+	if(Blend < Target)
+	{
+		Blend += Speed * Dt;
+		if(Blend > Target)
+			Blend = Target;
+	}
+	else if(Blend > Target)
+	{
+		Blend -= Speed * Dt;
+		if(Blend < Target)
+			Blend = Target;
+	}
+	const float e = Blend * Blend * (3.0f - 2.0f * Blend);
+	const vec2 Tip = RestTip + (s_KgHookPos - RestTip) * e;
+	KgDraw(pGraphics, Base, Tip, Len, Bend * (1.0f + 2.0f * sinf(pi * e)), (float)g_Config.m_ClKaguneWidth, (float)g_Config.m_ClKaguneWave * (1.0f - 0.7f * e), Time, k * 1.7f, true, Alpha, Color);
+}void CPlayers::RenderHook(
 	const CScreenRect &ScreenRect,
 	const CNetObj_Character *pPrevChar,
 	const CNetObj_Character *pPlayerChar,
@@ -549,7 +720,69 @@ void CPlayers::RenderHook(
 	int ClientId,
 	float Intra)
 {
-		if(g_Config.m_ClKagune && ClientId >= 0 && ClientId < MAX_CLIENTS)
+		if(ClientId >= 0 && ClientId == GameClient()->m_Snap.m_LocalClientId && g_Config.m_ClKagune != 0)
+	{
+		const int KgCount = g_Config.m_ClKaguneCount > 8 ? 8 : g_Config.m_ClKaguneCount;
+		const float KgTime = Client()->LocalTime();
+		const bool KgHooking = pPlayerChar->m_HookState > 0;
+		const float KgIntra = GameClient()->m_aClients[ClientId].m_IsPredicted ? Client()->PredIntraGameTick(g_Config.m_ClDummy) : Client()->IntraGameTick(g_Config.m_ClDummy);
+		const vec2 KgPos = mix(vec2(pPrevChar->m_X, pPrevChar->m_Y), vec2(pPlayerChar->m_X, pPlayerChar->m_Y), KgIntra);
+		const float KgAlpha = GameClient()->IsOtherTeam(ClientId) ? g_Config.m_ClShowOthersAlpha / 100.0f : 1.0f;
+		const ColorRGBA KgColor(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
+
+		float KgDt = KgTime - s_KgLast;
+		const bool KgSnap = !s_KgInit || KgDt > 0.25f || KgDt < 0.0f;
+		s_KgLast = KgTime;
+		s_KgInit = true;
+		if(KgDt > 0.033f)
+			KgDt = 0.033f;
+		if(KgDt < 0.0f)
+			KgDt = 0.0f;
+
+		if(KgHooking && s_KgPrevHook <= 0)
+		{
+			const float Roll = random_float();
+			int Want = Roll < 0.55f ? 1 : (Roll < 0.85f ? 2 : 3);
+			const int MaxWant = KgCount - 2 > 1 ? KgCount - 2 : 1;
+			if(Want > MaxWant)
+				Want = MaxWant;
+			int Mask = 0;
+			int Have = 0;
+			for(int Try = 0; Try < 40 && Have < Want; Try++)
+			{
+				int Pick = (int)(random_float() * KgCount);
+				if(Pick >= KgCount)
+					Pick = KgCount - 1;
+				if(!((Mask >> Pick) & 1))
+				{
+					Mask |= 1 << Pick;
+					Have++;
+				}
+			}
+			s_KgReach = Mask;
+		}
+		s_KgPrevHook = pPlayerChar->m_HookState;
+
+		for(int k = 0; k < KgCount; k++)
+		{
+			const float Side = KgCount > 1 ? (k / (float)(KgCount - 1)) * 2.0f - 1.0f : 0.0f;
+			const float Angle = KgRestAngle(k, KgCount, KgTime);
+			const float Len = g_Config.m_ClKaguneLen * (0.8f + 0.2f * KgNoise(KgTime * 0.6f, k * 3.3f + 5.0f)) * (0.85f + 0.15f * (float)((k * 37) % 7) / 6.0f);
+			const vec2 Target = KgPos + vec2(cosf(Angle), sinf(Angle)) * Len;
+			if(KgSnap || length(s_aKgTip[k] - Target) > 500.0f)
+			{
+				s_aKgTip[k] = Target;
+				s_aKgVel[k] = vec2(0.0f, 0.0f);
+			}
+			const float Kp = 40.0f + k * 7.0f;
+			const float Kd = 6.0f + k * 0.6f;
+			s_aKgVel[k] += ((Target - s_aKgTip[k]) * Kp - s_aKgVel[k] * Kd) * KgDt;
+			s_aKgTip[k] += s_aKgVel[k] * KgDt;
+
+			KgDrawBlend(Graphics(), KgPos, s_aKgTip[k], Len, Side * Len * 0.3f, k, KgDt, KgHooking && ((s_KgReach >> k) & 1), KgTime, KgAlpha, KgColor);
+		}
+	}
+		if(false && ClientId >= 0 && ClientId < MAX_CLIENTS)
 	{
 		const int FxCount = g_Config.m_ClKaguneCount;
 		if(pPlayerChar->m_HookState > 0 && s_aKaguneHookState[ClientId] <= 0)
@@ -644,7 +877,7 @@ void CPlayers::RenderHook(
 	// render head
 	int QuadOffset = NUM_WEAPONS * 2 + 2;
 	Graphics()->SetColor(1.0f, 1.0f, 1.0f, Alpha);
-	if(!g_Config.m_ClKagune)Graphics()->RenderQuadContainerAsSprite(m_WeaponEmoteQuadContainerIndex, QuadOffset, HookPos.x, HookPos.y);
+	if(!(ClientId >= 0 && ClientId == GameClient()->m_Snap.m_LocalClientId && g_Config.m_ClKagune != 0))Graphics()->RenderQuadContainerAsSprite(m_WeaponEmoteQuadContainerIndex, QuadOffset, HookPos.x, HookPos.y);
 
 	// render chain
 	++QuadOffset;
@@ -713,7 +946,7 @@ void CPlayers::RenderHook(
 		}
 		HookChainCount = 0;
 	}
-		if(g_Config.m_ClKagune && ClientId >= 0 && ClientId < MAX_CLIENTS)
+		if(false && ClientId >= 0 && ClientId < MAX_CLIENTS)
 	{
 		const ColorRGBA FxColor(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
 		const vec2 Start = HookPos + Dir * d;
@@ -727,6 +960,11 @@ void CPlayers::RenderHook(
 			const float Side = FxCount > 1 ? (k / (float)(FxCount - 1)) * 2.0f - 1.0f : 0.0f;
 			KaguneDrawTentacle(Graphics(), Start, HookPos, Side * Fan, (float)g_Config.m_ClKaguneWidth, (float)g_Config.m_ClKaguneWave * 0.7f, FxTime, k * 1.7f, Alpha, FxColor);
 		}
+		HookChainCount = 0;
+	}
+		if(ClientId >= 0 && ClientId == GameClient()->m_Snap.m_LocalClientId && g_Config.m_ClKagune != 0)
+	{
+		s_KgHookPos = HookPos;
 		HookChainCount = 0;
 	}
 	Graphics()->TextureSet(GameClient()->m_GameSkin.m_SpriteHookChain);
