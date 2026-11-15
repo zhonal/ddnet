@@ -553,6 +553,61 @@ void CPlayers::RenderHook(
 		s_aHookChainRenderInfo[HookChainCount].m_Scale = 1;
 		s_aHookChainRenderInfo[HookChainCount].m_Rotation = angle(Dir) + pi;
 	}
+		if(g_Config.m_ClKagune)
+	{
+		const ColorRGBA Base(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f);
+		const vec2 Start = HookPos + Dir * d;
+		const vec2 Perp = vec2(-Dir.y, Dir.x);
+		const float Time = Client()->LocalTime();
+		const int Count = g_Config.m_ClKaguneCount;
+		const float Thick = (float)g_Config.m_ClKaguneWidth;
+		const float Wave = (float)g_Config.m_ClKaguneWave;
+		const float Fan = minimum(d * 0.2f, 80.0f);
+		constexpr int Segs = 20;
+
+		Graphics()->QuadsSetRotation(0);
+		for(int Pass = 0; Pass < 2; Pass++)
+		{
+			Graphics()->TextureClear();
+			Graphics()->QuadsBegin();
+			if(Pass == 0)
+				Graphics()->SetColor(Base.r * 0.4f, Base.g * 0.4f, Base.b * 0.4f, Alpha);
+			else
+				Graphics()->SetColor(Base.r, Base.g, Base.b, Alpha);
+
+			for(int k = 0; k < Count; k++)
+			{
+				const float Side = Count > 1 ? (k / (float)(Count - 1)) * 2.0f - 1.0f : 0.0f;
+				const float Phase = k * 1.9f;
+				vec2 aPts[Segs + 1];
+				for(int i = 0; i <= Segs; i++)
+				{
+					const float t = i / (float)Segs;
+					const float Bulge = Side * Fan * sinf(t * pi);
+					const float Sway = sinf(Time * 4.0f + t * 5.0f + Phase) * Wave * sinf(t * pi);
+					aPts[i] = Start + (HookPos - Start) * t + Perp * (Bulge + Sway);
+				}
+				for(int i = 0; i < Segs; i++)
+				{
+					const vec2 Delta = aPts[i + 1] - aPts[i];
+					if(length(Delta) < 0.001f)
+						continue;
+					const vec2 N = normalize(vec2(-Delta.y, Delta.x));
+					const float Mul = Pass == 0 ? 1.5f : 1.0f;
+					const float w0 = Thick * Mul * (1.0f - i / (float)Segs) + 0.5f;
+					const float w1 = Thick * Mul * (1.0f - (i + 1) / (float)Segs) + 0.5f;
+					IGraphics::CFreeformItem Freeform(
+						aPts[i].x - N.x * w0, aPts[i].y - N.y * w0,
+						aPts[i].x + N.x * w0, aPts[i].y + N.y * w0,
+						aPts[i + 1].x - N.x * w1, aPts[i + 1].y - N.y * w1,
+						aPts[i + 1].x + N.x * w1, aPts[i + 1].y + N.y * w1);
+					Graphics()->QuadsDrawFreeform(&Freeform, 1);
+				}
+			}
+			Graphics()->QuadsEnd();
+		}
+		HookChainCount = 0;
+	}
 	Graphics()->TextureSet(GameClient()->m_GameSkin.m_SpriteHookChain);
 	Graphics()->RenderQuadContainerAsSpriteMultiple(m_WeaponEmoteQuadContainerIndex, QuadOffset, HookChainCount, s_aHookChainRenderInfo);
 
