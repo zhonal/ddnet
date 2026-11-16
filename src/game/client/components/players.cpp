@@ -694,9 +694,9 @@ static void KgDraw(IGraphics *pGraphics, vec2 Base, vec2 Tip, float Slack, float
 
 static void KgDrawBlend(IGraphics *pGraphics, vec2 Base, vec2 RestTip, float Len, float Bend, int k, float Dt, bool Reach, float Time, float Alpha, ColorRGBA Color)
 {
-	float &Blend = s_aKgBlend[k];
+	float &Blend = s_aKgBlend[k]; if(Reach) { Blend = 1.0f; return; }
 	const float Target = Reach ? 1.0f : 0.0f;
-	const float Speed = (Reach ? 5.0f : 3.5f) * (0.85f + 0.3f * (float)((k * 37) % 7) / 6.0f);
+	const float Speed = (Reach ? 5.0f : 7.0f) * (0.85f + 0.3f * (float)((k * 37) % 7) / 6.0f);
 	if(Blend < Target)
 	{
 		Blend += Speed * Dt;
@@ -774,10 +774,10 @@ static void KgDrawBlend(IGraphics *pGraphics, vec2 Base, vec2 RestTip, float Len
 				s_aKgTip[k] = Target;
 				s_aKgVel[k] = vec2(0.0f, 0.0f);
 			}
-			const float Kp = 40.0f + k * 7.0f;
-			const float Kd = 6.0f + k * 0.6f;
+			const float Kp = 70.0f + k * 8.0f;
+			const float Kd = 9.0f + k * 0.6f;
 			s_aKgVel[k] += ((Target - s_aKgTip[k]) * Kp - s_aKgVel[k] * Kd) * KgDt;
-			s_aKgTip[k] += s_aKgVel[k] * KgDt;
+			s_aKgTip[k] += s_aKgVel[k] * KgDt; { vec2 KgOff = s_aKgTip[k] - Target; const float KgMaxOff = Len * 0.35f; const float KgOffLen = length(KgOff); if(KgOffLen > KgMaxOff) { s_aKgTip[k] = Target + KgOff * (KgMaxOff / KgOffLen); s_aKgVel[k] = s_aKgVel[k] * 0.85f; } }
 
 			KgDrawBlend(Graphics(), KgPos, s_aKgTip[k], Len, Side * Len * 0.3f, k, KgDt, KgHooking && ((s_KgReach >> k) & 1), KgTime, KgAlpha, KgColor);
 		}
@@ -964,7 +964,7 @@ static void KgDrawBlend(IGraphics *pGraphics, vec2 Base, vec2 RestTip, float Len
 	}
 		if(ClientId >= 0 && ClientId == GameClient()->m_Snap.m_LocalClientId && g_Config.m_ClKagune != 0)
 	{
-		s_KgHookPos = HookPos;
+		s_KgHookPos = HookPos; { const ColorRGBA KgHc(g_Config.m_ClKaguneR / 255.0f, g_Config.m_ClKaguneG / 255.0f, g_Config.m_ClKaguneB / 255.0f, 1.0f); const vec2 KgStart = HookPos + Dir * d; const float KgT = Client()->LocalTime(); const int KgN = g_Config.m_ClKaguneCount > 8 ? 8 : g_Config.m_ClKaguneCount; for(int k = 0; k < KgN; k++) { if(!((s_KgReach >> k) & 1)) continue; s_aKgBlend[k] = 1.0f; const float KgBend = (k % 2 == 0 ? 1.0f : -1.0f) * (6.0f + k * 4.0f); KgDraw(Graphics(), KgStart, HookPos, (float)g_Config.m_ClKaguneLen, KgBend, (float)g_Config.m_ClKaguneWidth, (float)g_Config.m_ClKaguneWave * 0.7f, KgT, k * 1.7f, false, Alpha, KgHc); } }
 		HookChainCount = 0;
 	}
 	Graphics()->TextureSet(GameClient()->m_GameSkin.m_SpriteHookChain);
