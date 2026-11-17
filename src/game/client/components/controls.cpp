@@ -3,6 +3,7 @@
 #include "controls.h"
 
 #include <base/dbg.h>
+#include <base/math.h>
 #include <base/mem.h>
 #include <base/time.h>
 #include <base/vmath.h>
@@ -18,10 +19,146 @@
 #include <game/client/components/scoreboard.h>
 #include <game/client/gameclient.h>
 #include <game/collision.h>
+#include <game/gamecore.h>
 #include <game/localization.h>
+#include <game/mapitems.h>
 
 #include <algorithm>
+#include <cmath>
 
+namespace {
+
+// Допущения, не измеренные на твоей сборке. Всё, что зависит от сборки, лежит здесь.
+constexpr float AVOID_GRAVITY = 0.5f; // пикселей/тик^2, стандартная гравитация DDNet (по памяти)
+constexpr int AVOID_LOOKAHEAD_TICKS = 12;
+constexpr int AVOID_HOOK_PERIOD = 6; // тиков в одном цикле «хук / отпустить»
+constexpr int AVOID_HOOK_HOLD = 3; // сколько тиков из цикла хук нажат
+constexpr int AVOID_RAYS = 32;
+constexpr float AVOID_PROBE_RANGE = 64.0f;
+constexpr float AVOID_PROBE_STEP = 16.0f;
+
+bool IsDangerTile(int Tile)
+{
+	// Имена TILE_* взяты из памяти об upstream DDNet. Если их нет в твоём mapitems.h,
+	// сборка упадёт с ошибкой, а не станет молча вести тию во фриз.
+	return Tile == TILE_DEATH || Tile == TILE_FREEZE || Tile == TILE_DFREEZE;
+}
+
+bool IsDangerPoint(const CCollision *pCollision, vec2 Pos)
+{
+	const int Index = pCollision->GetPureMapIndex(Pos);
+	if(IsDangerTile(pCollision->GetTileIndex(Index)) || IsDangerTile(pCollision->GetFrontTileIndex(Index)))
+		return true;
+	return pCollision->IsTeleport(Index) != 0 || pCollision->IsEvilTeleport(Index) != 0;
+}
+
+// Тия попадает во фриз, когда в опасной клетке оказывается центр или один из четырёх «углов» тела.
+bool IsDangerBox(const CCollision *pCollision, vec2 Pos)
+{
+	const float R = CCharacterCore::PhysicalSize() / 3.0f;
+	return IsDangerPoint(pCollision, Pos) ||
+	       IsDangerPoint(pCollision, Pos + vec2(-R, 0.0f)) ||
+	       IsDangerPoint(pCollision, Pos + vec2(R, 0.0f)) ||
+	       IsDangerPoint(pCollision, Pos + vec2(0.0f, -R)) ||
+	       IsDangerPoint(pCollision, Pos + vec2(0.0f, R));
+}
+
+// Грубая траектория тии на ближайшие тики. Если раньше опасности встретилась стена, угрозы нет.
+bool TrajectoryThreat(const CCollision *pCollision, vec2 Pos, vec2 Vel)
+{
+	for(int Tick = 1; Tick <= AVOID_LOOKAHEAD_TICKS; Tick++)
+	{
+		const float T = (float)Tick;
+		const vec2 P(Pos.x + Vel.x * T, Pos.y + Vel.y * T + 0.5f * AVOID_GRAVITY * T * T);
+		if(pCollision->CheckPoint(P))
+			return false;
+		if(IsDangerBox(pCollision, P))
+			return true;
+	}
+	return false;
+}
+
+// Опасность по ходу движения (Dir = -1 или 1) в пределах Ahead пикселей, включая яму в полу.
+bool HorizontalDanger(const CCollision *pCollision, vec2 Pos, int Dir, float Ahead)
+{
+	for(float Dist = AVOID_PROBE_STEP; Dist <= Ahead; Dist += AVOID_PROBE_STEP)
+	{
+		const vec2 Probe = Pos + vec2((float)Dir * Dist, 0.0f);
+		if(pCollision->CheckPoint(Probe))
+			return false;
+		if(IsDangerBox(pCollision, Probe) || IsDangerPoint(pCollision, Probe + vec2(0.0f, 20.0f)))
+			return true;
+	}
+	return false;
+}
+
+// Единичный вектор «прочь от опасности». Нулевой вектор означает, что рядом опасности нет.
+vec2 EscapeDirection(const CCollision *pCollision, vec2 Pos)
+{
+	vec2 Sum(0.0f, 0.0f);
+	for(int i = 0; i < 8; i++)
+	{
+		const float Angle = (float)i * (pi / 4.0f);
+		const vec2 Dir(cosf(Angle), sinf(Angle));
+		for(float Dist = AVOID_PROBE_STEP; Dist <= AVOID_PROBE_RANGE; Dist += AVOID_PROBE_STEP)
+		{
+			if(pCollision->CheckPoint(Pos + Dir * Dist))
+				break;
+			if(IsDangerBox(pCollision, Pos + Dir * Dist))
+			{
+				Sum = Sum - Dir * (1.0f - Dist / (AVOID_PROBE_RANGE + AVOID_PROBE_STEP));
+				break;
+			}
+		}
+	}
+	const float Len = length(Sum);
+	if(Len < 0.001f)
+		return vec2(0.0f, 0.0f);
+	return Sum * (1.0f / Len);
+}
+
+// Ищет ближайшую подходящую стену для хука в сторону Escape: хукабельную, с чистым путём и без опасности у крепления.
+bool FindHookTarget(const CCollision *pCollision, vec2 Pos, float HookLength, vec2 Escape, vec2 *pOutTarget)
+{
+	static constexpr float START_DISTANCE = CCharacterCore::PhysicalSize() * 1.5f;
+	bool Found = false;
+	float BestScore = 0.0f;
+	for(int i = 0; i < AVOID_RAYS; i++)
+	{
+		const float Angle = (float)i * (2.0f * pi / (float)AVOID_RAYS);
+		const vec2 Dir(cosf(Angle), sinf(Angle));
+		const float Align = dot(Dir, Escape);
+		if(Align < 0.2f)
+			continue;
+
+		vec2 Hit, Before;
+		int Tele = 0;
+		const int Tile = pCollision->IntersectLineTeleHook(Pos + Dir * START_DISTANCE, Pos + Dir * HookLength, &Hit, &Before, &Tele);
+		if(Tile == 0 || Tile == TILE_NOHOOK || Tile == TILE_TELEINHOOK)
+			continue;
+
+		const float Dist = distance(Pos, Hit);
+		bool Clear = !IsDangerBox(pCollision, Before);
+		for(float d = AVOID_PROBE_STEP; Clear && d < Dist; d += AVOID_PROBE_STEP)
+			Clear = !IsDangerBox(pCollision, Pos + Dir * d);
+		const vec2 aAround[4] = {vec2(32.0f, 0.0f), vec2(-32.0f, 0.0f), vec2(0.0f, 32.0f), vec2(0.0f, -32.0f)};
+		for(int k = 0; Clear && k < 4; k++)
+			Clear = !IsDangerBox(pCollision, Before + aAround[k]);
+		if(!Clear)
+			continue;
+
+		const float Score = Align * 100.0f - Dist * 0.1f;
+		if(!Found || Score > BestScore)
+		{
+			Found = true;
+			BestScore = Score;
+			*pOutTarget = Hit;
+		}
+	}
+	return Found;
+}
+
+} // namespace
 CControls::CControls()
 {
 	mem_zero(&m_aLastData, sizeof(m_aLastData));
@@ -240,6 +377,10 @@ void CControls::OnMessage(int Msg, void *pRawMsg)
 
 int CControls::SnapInput(int *pData)
 {
+	// живое состояние клавиш прыжка и хука; авойд подменяет их только на время отправки
+	const int LiveJump = m_aInputData[g_Config.m_ClDummy].m_Jump;
+	const int LiveHook = m_aInputData[g_Config.m_ClDummy].m_Hook;
+
 	// update player state
 	if(GameClient()->m_Chat.IsActive())
 		m_aInputData[g_Config.m_ClDummy].m_PlayerFlags = PLAYERFLAG_CHATTING;
@@ -370,6 +511,9 @@ int CControls::SnapInput(int *pData)
 			m_aInputData[g_Config.m_ClDummy].m_TargetY = (int)(std::cos(t * 3) * 100.0f);
 		}
 
+		if(g_Config.m_ClAvoid)
+			ApplyAvoid(&m_aInputData[g_Config.m_ClDummy]);
+
 		// check if we need to send input
 		Send = Send || m_aInputData[g_Config.m_ClDummy].m_Direction != m_aLastData[g_Config.m_ClDummy].m_Direction;
 		Send = Send || m_aInputData[g_Config.m_ClDummy].m_Jump != m_aLastData[g_Config.m_ClDummy].m_Jump;
@@ -386,11 +530,73 @@ int CControls::SnapInput(int *pData)
 	m_aLastData[g_Config.m_ClDummy] = m_aInputData[g_Config.m_ClDummy];
 
 	if(!Send)
+	{
+		m_aInputData[g_Config.m_ClDummy].m_Jump = LiveJump;
+		m_aInputData[g_Config.m_ClDummy].m_Hook = LiveHook;
 		return 0;
+	}
 
 	m_LastSendTime = time_get();
 	mem_copy(pData, &m_aInputData[g_Config.m_ClDummy], sizeof(m_aInputData[0]));
+	m_aInputData[g_Config.m_ClDummy].m_Jump = LiveJump;
+	m_aInputData[g_Config.m_ClDummy].m_Hook = LiveHook;
 	return sizeof(m_aInputData[0]);
+}
+void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
+{
+	const int Dummy = g_Config.m_ClDummy;
+	const int LocalId = GameClient()->m_aLocalIds[Dummy];
+	if(LocalId < 0 || LocalId >= MAX_CLIENTS)
+		return;
+	if(!GameClient()->m_Snap.m_aCharacters[LocalId].m_Active || GameClient()->m_Snap.m_SpecInfo.m_Active)
+		return;
+
+	const CGameClient::CClientData &Data = GameClient()->m_aClients[LocalId];
+	if(!Data.m_IsPredicted)
+		return;
+	const CCharacterCore &Core = Data.m_Predicted;
+	if(Core.m_FreezeEnd != 0 || Core.m_DeepFrozen || Core.m_LiveFrozen || Core.m_Super)
+		return;
+
+	const CCollision *pCollision = Collision();
+	const vec2 Pos = Core.m_Pos;
+	const vec2 Vel = Core.m_Vel;
+
+	if(TrajectoryThreat(pCollision, Pos, Vel))
+	{
+		vec2 Escape = EscapeDirection(pCollision, Pos);
+		if(length(Escape) < 0.001f)
+			Escape = length(Vel) > 1.0f ? -normalize(Vel) : vec2(0.0f, -1.0f);
+
+		if(Escape.x > 0.3f)
+			pInput->m_Direction = 1;
+		else if(Escape.x < -0.3f)
+			pInput->m_Direction = -1;
+
+		const bool OnGround = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize());
+		const bool CanJump = OnGround || (Core.m_Jumped & 2) == 0;
+		const bool HeadFree = !pCollision->CheckPoint(Pos + vec2(0.0f, -32.0f)) && !IsDangerBox(pCollision, Pos + vec2(0.0f, -40.0f));
+		if(Escape.y < -0.3f && CanJump && HeadFree)
+			pInput->m_Jump = m_aLastData[Dummy].m_Jump == 0 ? 1 : 0;
+
+		vec2 Target;
+		if(FindHookTarget(pCollision, Pos, Core.m_Tuning.m_HookLength, Escape, &Target))
+		{
+			pInput->m_TargetX = round_to_int(Target.x - Pos.x);
+			pInput->m_TargetY = round_to_int(Target.y - Pos.y);
+			pInput->m_Hook = (Client()->PredGameTick(Dummy) % AVOID_HOOK_PERIOD) < AVOID_HOOK_HOLD ? 1 : 0;
+		}
+	}
+
+	// не идти и не лететь горизонтально во фриз
+	int MoveDir = pInput->m_Direction;
+	if(MoveDir == 0 && std::fabs(Vel.x) > 2.0f)
+		MoveDir = Vel.x > 0.0f ? 1 : -1;
+	if(MoveDir != 0 && HorizontalDanger(pCollision, Pos, MoveDir, 24.0f + std::fabs(Vel.x) * 8.0f))
+	{
+		const bool MovingToward = Vel.x * (float)MoveDir > 1.0f;
+		pInput->m_Direction = MovingToward ? -MoveDir : 0;
+	}
 }
 
 void CControls::OnRender()
