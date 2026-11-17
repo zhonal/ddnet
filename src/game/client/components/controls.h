@@ -64,5 +64,6 @@ private:
 	static void ConTpDummyToCursor(IConsole::IResult *pResult, void *pUserData);
 	vec2 CursorWorldPos() const;
 	void SendPracticeTeleportToCursor(int Conn);
+	void ApplyAvoid(CNetObj_PlayerInput *pInput);
 };
 #endif
