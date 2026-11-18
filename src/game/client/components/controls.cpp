@@ -28,19 +28,58 @@
 
 namespace {
 
-// Допущения, не измеренные на твоей сборке. Всё, что зависит от сборки, лежит здесь.
-constexpr float AVOID_GRAVITY = 0.5f; // пикселей/тик^2, стандартная гравитация DDNet (по памяти)
-constexpr int AVOID_LOOKAHEAD_TICKS = 12;
-constexpr int AVOID_HOOK_PERIOD = 6; // тиков в одном цикле «хук / отпустить»
-constexpr int AVOID_HOOK_HOLD = 3; // сколько тиков из цикла хук нажат
-constexpr int AVOID_RAYS = 32;
-constexpr float AVOID_PROBE_RANGE = 64.0f;
-constexpr float AVOID_PROBE_STEP = 16.0f;
+constexpr int AVOID_LOOKAHEAD_TICKS = 30;
+constexpr int AVOID_HOOK_SIM_TICKS = 40;
+constexpr int AVOID_RAYS = 48;
+constexpr float AVOID_HOOK_START = CCharacterCore::PhysicalSize() * 1.5f;
+constexpr float AVOID_HOOK_NEAR = 46.0f;
+
+// Физика. Значения по умолчанию -- стандартные для DDNet (по памяти, не измерены на твоей сборке).
+// ReadTune заменяет их текущими значениями сервера, если параметр с таким именем найден.
+struct SAvoidTune
+{
+	float m_Gravity = 0.5f;
+	float m_GroundSpeed = 10.0f;
+	float m_GroundAccel = 2.0f;
+	float m_GroundFriction = 0.5f;
+	float m_AirSpeed = 5.0f;
+	float m_AirAccel = 1.5f;
+	float m_AirFriction = 0.95f;
+	float m_GroundJump = 13.2f;
+	float m_AirJump = 12.0f;
+	float m_HookLength = 380.0f;
+	float m_HookFireSpeed = 80.0f;
+	float m_HookDragAccel = 3.0f;
+	float m_HookDragSpeed = 15.0f;
+};
+
+float TuneOr(const CTuningParams &Tuning, const char *pName, float Default)
+{
+	float Value = 0.0f;
+	return Tuning.Get(pName, &Value) ? Value : Default;
+}
+
+SAvoidTune ReadTune(const CTuningParams &Tuning)
+{
+	SAvoidTune T;
+	T.m_Gravity = TuneOr(Tuning, "gravity", T.m_Gravity);
+	T.m_GroundSpeed = TuneOr(Tuning, "ground_control_speed", T.m_GroundSpeed);
+	T.m_GroundAccel = TuneOr(Tuning, "ground_control_accel", T.m_GroundAccel);
+	T.m_GroundFriction = TuneOr(Tuning, "ground_friction", T.m_GroundFriction);
+	T.m_AirSpeed = TuneOr(Tuning, "air_control_speed", T.m_AirSpeed);
+	T.m_AirAccel = TuneOr(Tuning, "air_control_accel", T.m_AirAccel);
+	T.m_AirFriction = TuneOr(Tuning, "air_friction", T.m_AirFriction);
+	T.m_GroundJump = TuneOr(Tuning, "ground_jump_impulse", T.m_GroundJump);
+	T.m_AirJump = TuneOr(Tuning, "air_jump_impulse", T.m_AirJump);
+	T.m_HookLength = TuneOr(Tuning, "hook_length", T.m_HookLength);
+	T.m_HookFireSpeed = TuneOr(Tuning, "hook_fire_speed", T.m_HookFireSpeed);
+	T.m_HookDragAccel = TuneOr(Tuning, "hook_drag_accel", T.m_HookDragAccel);
+	T.m_HookDragSpeed = TuneOr(Tuning, "hook_drag_speed", T.m_HookDragSpeed);
+	return T;
+}
 
 bool IsDangerTile(int Tile)
 {
-	// Имена TILE_* взяты из памяти об upstream DDNet. Если их нет в твоём mapitems.h,
-	// сборка упадёт с ошибкой, а не станет молча вести тию во фриз.
 	return Tile == TILE_DEATH || Tile == TILE_FREEZE || Tile == TILE_DFREEZE;
 }
 
@@ -63,102 +102,202 @@ bool IsDangerBox(const CCollision *pCollision, vec2 Pos)
 	       IsDangerPoint(pCollision, Pos + vec2(0.0f, R));
 }
 
-// Грубая траектория тии на ближайшие тики. Если раньше опасности встретилась стена, угрозы нет.
-bool TrajectoryThreat(const CCollision *pCollision, vec2 Pos, vec2 Vel)
+float SatAdd(float Current, float Limit, float Modifier)
 {
-	for(int Tick = 1; Tick <= AVOID_LOOKAHEAD_TICKS; Tick++)
+	if(Modifier < 0.0f)
 	{
-		const float T = (float)Tick;
-		const vec2 P(Pos.x + Vel.x * T, Pos.y + Vel.y * T + 0.5f * AVOID_GRAVITY * T * T);
-		if(pCollision->CheckPoint(P))
-			return false;
-		if(IsDangerBox(pCollision, P))
-			return true;
+		if(Current < -Limit)
+			return Current;
+		Current += Modifier;
+		return Current < -Limit ? -Limit : Current;
 	}
-	return false;
+	if(Current > Limit)
+		return Current;
+	Current += Modifier;
+	return Current > Limit ? Limit : Current;
 }
 
-// Опасность по ходу движения (Dir = -1 или 1) в пределах Ahead пикселей, включая яму в полу.
-bool HorizontalDanger(const CCollision *pCollision, vec2 Pos, int Dir, float Ahead)
+// Один тик движения без хука; Dir = -1, 0 или 1 (удерживаемое направление).
+void SimStep(const CCollision *pCollision, const SAvoidTune &T, vec2 *pPos, vec2 *pVel, int Dir)
 {
-	for(float Dist = AVOID_PROBE_STEP; Dist <= Ahead; Dist += AVOID_PROBE_STEP)
-	{
-		const vec2 Probe = Pos + vec2((float)Dir * Dist, 0.0f);
-		if(pCollision->CheckPoint(Probe))
-			return false;
-		if(IsDangerBox(pCollision, Probe) || IsDangerPoint(pCollision, Probe + vec2(0.0f, 20.0f)))
-			return true;
-	}
-	return false;
+	const bool Grounded = pCollision->IsOnGround(*pPos, CCharacterCore::PhysicalSize());
+	pVel->y += T.m_Gravity;
+	const float MaxSpeed = Grounded ? T.m_GroundSpeed : T.m_AirSpeed;
+	const float Accel = Grounded ? T.m_GroundAccel : T.m_AirAccel;
+	const float Friction = Grounded ? T.m_GroundFriction : T.m_AirFriction;
+	if(Dir < 0)
+		pVel->x = SatAdd(pVel->x, MaxSpeed, -Accel);
+	else if(Dir > 0)
+		pVel->x = SatAdd(pVel->x, MaxSpeed, Accel);
+	else
+		pVel->x *= Friction;
+	pCollision->MoveBox(pPos, pVel, CCharacterCore::PhysicalSizeVec2(), vec2(0.0f, 0.0f));
 }
 
-// Единичный вектор «прочь от опасности». Нулевой вектор означает, что рядом опасности нет.
-vec2 EscapeDirection(const CCollision *pCollision, vec2 Pos)
+// Тик, на котором тия впервые окажется в опасной клетке, или -1, если за Ticks тиков этого не будет.
+int SimDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int Ticks)
 {
-	vec2 Sum(0.0f, 0.0f);
-	for(int i = 0; i < 8; i++)
+	for(int Tick = 1; Tick <= Ticks; Tick++)
 	{
-		const float Angle = (float)i * (pi / 4.0f);
-		const vec2 Dir(cosf(Angle), sinf(Angle));
-		for(float Dist = AVOID_PROBE_STEP; Dist <= AVOID_PROBE_RANGE; Dist += AVOID_PROBE_STEP)
+		SimStep(pCollision, T, &Pos, &Vel, Dir);
+		if(IsDangerBox(pCollision, Pos))
+			return Tick;
+	}
+	return -1;
+}
+
+int SimJumpDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, float Impulse, int Dir, int Ticks)
+{
+	Vel.y = -Impulse;
+	return SimDangerTick(pCollision, T, Pos, Vel, Dir, Ticks);
+}
+
+int HookFlightTicks(const SAvoidTune &T, float Dist)
+{
+	const float Speed = T.m_HookFireSpeed > 1.0f ? T.m_HookFireSpeed : 1.0f;
+	const float Flight = std::ceil((Dist - AVOID_HOOK_START) / Speed);
+	return (Flight > 0.0f ? (int)Flight : 0) + 1;
+}
+
+// Тия цепляется за HookPoint через FlightTicks тиков и подтягивается к нему.
+int SimHookDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, vec2 HookPoint, int FlightTicks, int Dir, int Ticks)
+{
+	for(int Tick = 1; Tick <= Ticks; Tick++)
+	{
+		if(Tick > FlightTicks && distance(HookPoint, Pos) > AVOID_HOOK_NEAR)
 		{
-			if(pCollision->CheckPoint(Pos + Dir * Dist))
-				break;
-			if(IsDangerBox(pCollision, Pos + Dir * Dist))
-			{
-				Sum = Sum - Dir * (1.0f - Dist / (AVOID_PROBE_RANGE + AVOID_PROBE_STEP));
-				break;
-			}
+			vec2 HookVel = normalize(HookPoint - Pos) * T.m_HookDragAccel;
+			if(HookVel.y > 0.0f)
+				HookVel.y *= 0.3f;
+			if((HookVel.x < 0.0f && Dir < 0) || (HookVel.x > 0.0f && Dir > 0))
+				HookVel.x *= 0.95f;
+			else
+				HookVel.x *= 0.75f;
+			const vec2 NewVel = Vel + HookVel;
+			if(length(NewVel) < T.m_HookDragSpeed || length(NewVel) < length(Vel))
+				Vel = NewVel;
 		}
+		SimStep(pCollision, T, &Pos, &Vel, Dir);
+		if(IsDangerBox(pCollision, Pos))
+			return Tick;
 	}
-	const float Len = length(Sum);
-	if(Len < 0.001f)
-		return vec2(0.0f, 0.0f);
-	return Sum * (1.0f / Len);
+	return -1;
 }
 
-// Ищет ближайшую подходящую стену для хука в сторону Escape: хукабельную, с чистым путём и без опасности у крепления.
-bool FindHookTarget(const CCollision *pCollision, vec2 Pos, float HookLength, vec2 Escape, vec2 *pOutTarget)
+// Куда попадёт хук, выпущенный из Pos в направлении Dir. Ложь, если хукабельной стены нет.
+bool RayHook(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Dir, vec2 *pHit)
 {
-	static constexpr float START_DISTANCE = CCharacterCore::PhysicalSize() * 1.5f;
+	vec2 Hit, Before;
+	int Tele = 0;
+	const int Tile = pCollision->IntersectLineTeleHook(Pos + Dir * AVOID_HOOK_START, Pos + Dir * T.m_HookLength, &Hit, &Before, &Tele);
+	if(Tile == 0 || Tile == TILE_NOHOOK || Tile == TILE_TELEINHOOK)
+		return false;
+	*pHit = Hit;
+	return true;
+}
+
+// Ближайшая стена, за которую можно зацепиться и не попасть в опасность. Если полностью безопасной
+// нет, берёт ту, что оттягивает опасность дальше всего (но заметно лучше, чем без хука).
+bool FindHookTarget(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int BaselineTick, vec2 *pTarget)
+{
 	bool Found = false;
-	float BestScore = 0.0f;
+	bool BestSafe = false;
+	float BestDist = 0.0f;
+	int BestTick = -1;
 	for(int i = 0; i < AVOID_RAYS; i++)
 	{
 		const float Angle = (float)i * (2.0f * pi / (float)AVOID_RAYS);
-		const vec2 Dir(cosf(Angle), sinf(Angle));
-		const float Align = dot(Dir, Escape);
-		if(Align < 0.2f)
+		vec2 Hit;
+		if(!RayHook(pCollision, T, Pos, vec2(cosf(Angle), sinf(Angle)), &Hit))
 			continue;
-
-		vec2 Hit, Before;
-		int Tele = 0;
-		const int Tile = pCollision->IntersectLineTeleHook(Pos + Dir * START_DISTANCE, Pos + Dir * HookLength, &Hit, &Before, &Tele);
-		if(Tile == 0 || Tile == TILE_NOHOOK || Tile == TILE_TELEINHOOK)
-			continue;
-
 		const float Dist = distance(Pos, Hit);
-		bool Clear = !IsDangerBox(pCollision, Before);
-		for(float d = AVOID_PROBE_STEP; Clear && d < Dist; d += AVOID_PROBE_STEP)
-			Clear = !IsDangerBox(pCollision, Pos + Dir * d);
-		const vec2 aAround[4] = {vec2(32.0f, 0.0f), vec2(-32.0f, 0.0f), vec2(0.0f, 32.0f), vec2(0.0f, -32.0f)};
-		for(int k = 0; Clear && k < 4; k++)
-			Clear = !IsDangerBox(pCollision, Before + aAround[k]);
-		if(!Clear)
+		const int Tick = SimHookDangerTick(pCollision, T, Pos, Vel, Hit, HookFlightTicks(T, Dist), Dir, AVOID_HOOK_SIM_TICKS);
+		const bool Safe = Tick < 0;
+		if(!Safe && Tick <= BaselineTick + 2)
 			continue;
 
-		const float Score = Align * 100.0f - Dist * 0.1f;
-		if(!Found || Score > BestScore)
+		bool Take = false;
+		if(!Found)
+			Take = true;
+		else if(Safe && !BestSafe)
+			Take = true;
+		else if(Safe && BestSafe)
+			Take = Dist < BestDist;
+		else if(!Safe && !BestSafe)
+			Take = Tick > BestTick;
+		if(Take)
 		{
 			Found = true;
-			BestScore = Score;
-			*pOutTarget = Hit;
+			BestSafe = Safe;
+			BestDist = Dist;
+			BestTick = Tick;
+			*pTarget = Hit;
 		}
 	}
 	return Found;
 }
 
-} // namespace
+struct SAvoidPlan
+{
+	int m_Direction = 0;
+	bool m_Jump = false;
+	bool m_Hook = false;
+	vec2 m_HookTarget = vec2(0.0f, 0.0f);
+};
+
+// Возвращает true, если тия при текущем вводе попадёт в опасность в ближайшие тики.
+// Порядок спасения: сменить направление, прыгнуть, зацепиться хуком. Если ничего не помогает,
+// ввод игрока остаётся как есть.
+bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int UserDir, bool CanJump, bool AllowWalk, bool AllowJump, bool AllowHook, SAvoidPlan *pPlan)
+{
+	*pPlan = SAvoidPlan();
+	pPlan->m_Direction = UserDir;
+	const int Base = SimDangerTick(pCollision, T, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS);
+	if(Base < 0)
+		return false;
+
+	if(AllowWalk)
+	{
+		const int aDirs[2] = {UserDir == 0 ? -1 : 0, UserDir == 0 ? 1 : -UserDir};
+		for(int Dir : aDirs)
+		{
+			if(SimDangerTick(pCollision, T, Pos, Vel, Dir, AVOID_LOOKAHEAD_TICKS) < 0)
+			{
+				pPlan->m_Direction = Dir;
+				return true;
+			}
+		}
+	}
+
+	if(AllowJump && CanJump)
+	{
+		const float Impulse = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize()) ? T.m_GroundJump : T.m_AirJump;
+		const int aDirs[3] = {UserDir, UserDir == 0 ? -1 : 0, UserDir == 0 ? 1 : -UserDir};
+		for(int Dir : aDirs)
+		{
+			if(SimJumpDangerTick(pCollision, T, Pos, Vel, Impulse, Dir, AVOID_LOOKAHEAD_TICKS) < 0)
+			{
+				pPlan->m_Direction = Dir;
+				pPlan->m_Jump = true;
+				return true;
+			}
+		}
+	}
+
+	if(AllowHook)
+	{
+		vec2 Target;
+		if(FindHookTarget(pCollision, T, Pos, Vel, UserDir, Base, &Target))
+		{
+			pPlan->m_Hook = true;
+			pPlan->m_HookTarget = Target;
+			return true;
+		}
+	}
+	return true;
+}
+
+} // namespacevoid CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 CControls::CControls()
 {
 	mem_zero(&m_aLastData, sizeof(m_aLastData));
@@ -546,56 +685,123 @@ void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 {
 	const int Dummy = g_Config.m_ClDummy;
 	const int LocalId = GameClient()->m_aLocalIds[Dummy];
-	if(LocalId < 0 || LocalId >= MAX_CLIENTS)
-		return;
-	if(!GameClient()->m_Snap.m_aCharacters[LocalId].m_Active || GameClient()->m_Snap.m_SpecInfo.m_Active)
-		return;
-
-	const CGameClient::CClientData &Data = GameClient()->m_aClients[LocalId];
-	if(!Data.m_IsPredicted)
-		return;
-	const CCharacterCore &Core = Data.m_Predicted;
-	if(Core.m_FreezeEnd != 0 || Core.m_DeepFrozen || Core.m_LiveFrozen || Core.m_Super)
-		return;
-
-	const CCollision *pCollision = Collision();
-	const vec2 Pos = Core.m_Pos;
-	const vec2 Vel = Core.m_Vel;
-
-	if(TrajectoryThreat(pCollision, Pos, Vel))
+	const CGameClient::CClientData *pData = nullptr;
+	if(LocalId >= 0 && LocalId < MAX_CLIENTS && GameClient()->m_Snap.m_aCharacters[LocalId].m_Active && !GameClient()->m_Snap.m_SpecInfo.m_Active)
+		pData = &GameClient()->m_aClients[LocalId];
+	if(pData == nullptr || !pData->m_IsPredicted)
 	{
-		vec2 Escape = EscapeDirection(pCollision, Pos);
-		if(length(Escape) < 0.001f)
-			Escape = length(Vel) > 1.0f ? -normalize(Vel) : vec2(0.0f, -1.0f);
-
-		if(Escape.x > 0.3f)
-			pInput->m_Direction = 1;
-		else if(Escape.x < -0.3f)
-			pInput->m_Direction = -1;
-
-		const bool OnGround = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize());
-		const bool CanJump = OnGround || (Core.m_Jumped & 2) == 0;
-		const bool HeadFree = !pCollision->CheckPoint(Pos + vec2(0.0f, -32.0f)) && !IsDangerBox(pCollision, Pos + vec2(0.0f, -40.0f));
-		if(Escape.y < -0.3f && CanJump && HeadFree)
-			pInput->m_Jump = m_aLastData[Dummy].m_Jump == 0 ? 1 : 0;
-
-		vec2 Target;
-		if(FindHookTarget(pCollision, Pos, Core.m_Tuning.m_HookLength, Escape, &Target))
-		{
-			pInput->m_TargetX = round_to_int(Target.x - Pos.x);
-			pInput->m_TargetY = round_to_int(Target.y - Pos.y);
-			pInput->m_Hook = (Client()->PredGameTick(Dummy) % AVOID_HOOK_PERIOD) < AVOID_HOOK_HOLD ? 1 : 0;
-		}
+		m_aAvoidHolding[Dummy] = false;
+		return;
+	}
+	const CCharacterCore &Core = pData->m_Predicted;
+	if(Core.m_FreezeEnd != 0 || Core.m_DeepFrozen || Core.m_Super)
+	{
+		m_aAvoidHolding[Dummy] = false;
+		return;
 	}
 
-	// не идти и не лететь горизонтально во фриз
-	int MoveDir = pInput->m_Direction;
-	if(MoveDir == 0 && std::fabs(Vel.x) > 2.0f)
-		MoveDir = Vel.x > 0.0f ? 1 : -1;
-	if(MoveDir != 0 && HorizontalDanger(pCollision, Pos, MoveDir, 24.0f + std::fabs(Vel.x) * 8.0f))
+	const CCollision *pCollision = Collision();
+	const SAvoidTune Tune = ReadTune(Core.m_Tuning);
+	const vec2 Pos = Core.m_Pos;
+	const vec2 Vel = Core.m_Vel;
+	const int Tick = Client()->PredGameTick(Dummy);
+	const int UserDir = pInput->m_Direction;
+	const int LiveJump = pInput->m_Jump;
+	const int LiveHook = pInput->m_Hook;
+	const bool OnGround = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize());
+	const bool CanJump = OnGround || (Core.m_Jumped & 2) == 0;
+	const bool HookBusy = Core.m_HookState == HOOK_GRABBED || Core.m_HookState == HOOK_FLYING;
+	const bool HookAllowed = g_Config.m_ClAvoidHook != 0 && Tick >= m_aAvoidBlockUntil[Dummy];
+
+	SAvoidPlan Plan;
+	bool Threat;
+	if(m_aAvoidHolding[Dummy] && HookAllowed && HookBusy)
 	{
-		const bool MovingToward = Vel.x * (float)MoveDir > 1.0f;
-		pInput->m_Direction = MovingToward ? -MoveDir : 0;
+		// Держим хук, пока без него тия всё ещё попадала бы в опасность.
+		Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS) >= 0;
+		Plan.m_Direction = UserDir;
+		Plan.m_Hook = Threat;
+	}
+	else
+	{
+		Threat = PlanAvoid(pCollision, Tune, Pos, Vel, UserDir, CanJump, g_Config.m_ClAvoidWalk != 0, g_Config.m_ClAvoidJump != 0, HookAllowed, &Plan);
+	}
+
+	bool Handled = false; // авойд сам управляет прыжком или хуком в этот тик
+	if(Threat)
+	{
+		pInput->m_Direction = Plan.m_Direction;
+		if(Plan.m_Hook)
+		{
+			if(!m_aAvoidHolding[Dummy])
+			{
+				m_aAvoidHolding[Dummy] = true;
+				m_aAvoidHoldStart[Dummy] = Tick;
+			}
+			if(Tick - m_aAvoidHoldStart[Dummy] > g_Config.m_ClAvoidHoldMax * Client()->GameTickSpeed())
+			{
+				m_aAvoidHolding[Dummy] = false;
+				m_aAvoidBlockUntil[Dummy] = Tick + 10;
+			}
+			else
+			{
+				if(!HookBusy)
+				{
+					pInput->m_TargetX = round_to_int(Plan.m_HookTarget.x - Pos.x);
+					pInput->m_TargetY = round_to_int(Plan.m_HookTarget.y - Pos.y);
+				}
+				pInput->m_Hook = 1;
+				Handled = true;
+			}
+		}
+		else
+		{
+			m_aAvoidHolding[Dummy] = false;
+			if(Plan.m_Jump)
+			{
+				pInput->m_Jump = m_aLastData[Dummy].m_Jump == 0 ? 1 : 0;
+				Handled = true;
+			}
+		}
+	}
+	else
+	{
+		m_aAvoidHolding[Dummy] = false;
+	}
+
+	// Отмена твоих собственных прыжка и хука, если они ведут в опасность.
+	if(g_Config.m_ClAvoidFilter && !Handled)
+	{
+		const int Dir = pInput->m_Direction;
+		if(LiveJump && CanJump)
+		{
+			const float Impulse = OnGround ? Tune.m_GroundJump : Tune.m_AirJump;
+			if(SimJumpDangerTick(pCollision, Tune, Pos, Vel, Impulse, Dir, AVOID_LOOKAHEAD_TICKS) >= 0)
+				pInput->m_Jump = 0;
+		}
+		if(LiveHook)
+		{
+			vec2 HookPoint(0.0f, 0.0f);
+			int Flight = 0;
+			bool Have = false;
+			if(Core.m_HookState == HOOK_GRABBED)
+			{
+				HookPoint = Core.m_HookPos;
+				Have = true;
+			}
+			else
+			{
+				const vec2 Aim((float)pInput->m_TargetX, (float)pInput->m_TargetY);
+				if(length(Aim) > 0.5f)
+				{
+					Have = RayHook(pCollision, Tune, Pos, normalize(Aim), &HookPoint);
+					if(Have)
+						Flight = HookFlightTicks(Tune, distance(Pos, HookPoint));
+				}
+			}
+			if(Have && SimHookDangerTick(pCollision, Tune, Pos, Vel, HookPoint, Flight, Dir, AVOID_HOOK_SIM_TICKS) >= 0)
+				pInput->m_Hook = 0;
+		}
 	}
 }
 
