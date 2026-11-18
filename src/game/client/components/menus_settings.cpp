@@ -14,6 +14,91 @@
 #include <game/client/ui.h>
 #include <game/localization.h>
 
+#include <algorithm>
+#include <cstdio>
+
+namespace {
+
+// Название клиента во вкладке настроек. Поменяй на своё.
+constexpr const char *CLIENT_MENU_NAME = "Zhonal";
+constexpr int CLIENT_PRESET_SLOTS = 3;
+
+struct SClientSetting
+{
+	int *m_pValue;
+	int m_Min;
+	int m_Max;
+	int m_Default;
+};
+
+// Порядок важен: по нему настройки пишутся в пресет. Новые настройки добавляй ТОЛЬКО в конец списка.
+const SClientSetting *ClientSettings(int *pNum)
+{
+	static const SClientSetting s_aSettings[] = {
+		{&g_Config.m_ClAvoid, 0, 1, 0},
+		{&g_Config.m_ClAvoidWalk, 0, 1, 1},
+		{&g_Config.m_ClAvoidJump, 0, 1, 1},
+		{&g_Config.m_ClAvoidHook, 0, 1, 1},
+		{&g_Config.m_ClAvoidFilter, 0, 1, 1},
+		{&g_Config.m_ClAvoidHoldMax, 1, 10, 3},
+		{&g_Config.m_ClKagune, 0, 1, 1},
+		{&g_Config.m_ClKaguneR, 0, 255, 200},
+		{&g_Config.m_ClKaguneG, 0, 255, 10},
+		{&g_Config.m_ClKaguneB, 0, 255, 25},
+		{&g_Config.m_ClKaguneWidth, 1, 20, 6},
+		{&g_Config.m_ClKaguneCount, 1, 8, 5},
+		{&g_Config.m_ClKaguneWave, 0, 50, 14},
+		{&g_Config.m_ClKaguneLen, 30, 300, 100},
+		{&g_Config.m_ClKaguneStyle, 0, 3, 0},
+		{&g_Config.m_ClKaguneShimmer, 0, 100, 60},
+		{&g_Config.m_ClHammerFx, 0, 1, 1},
+		{&g_Config.m_ClHammerFxR, 0, 255, 255},
+		{&g_Config.m_ClHammerFxG, 0, 255, 120},
+		{&g_Config.m_ClHammerFxB, 0, 255, 20},
+		{&g_Config.m_ClHammerFxSize, 25, 300, 100},
+	};
+	*pNum = (int)(sizeof(s_aSettings) / sizeof(s_aSettings[0]));
+	return s_aSettings;
+}
+
+void SaveClientPreset(char *pDest, int DestSize)
+{
+	int Num = 0;
+	const SClientSetting *pSettings = ClientSettings(&Num);
+	char aBuf[256];
+	int Len = 0;
+	aBuf[0] = '\0';
+	for(int i = 0; i < Num && Len < (int)sizeof(aBuf) - 8; i++)
+		Len += std::snprintf(aBuf + Len, sizeof(aBuf) - Len, "%d ", *pSettings[i].m_pValue);
+	str_copy(pDest, aBuf, DestSize);
+}
+
+// Загружает столько значений, сколько есть в строке; всё за пределами диапазона обрезается.
+void LoadClientPreset(const char *pSrc)
+{
+	int Num = 0;
+	const SClientSetting *pSettings = ClientSettings(&Num);
+	for(int i = 0; i < Num; i++)
+	{
+		int Value = 0;
+		int Used = 0;
+		if(std::sscanf(pSrc, "%d%n", &Value, &Used) != 1)
+			break;
+		pSrc += Used;
+		*pSettings[i].m_pValue = std::clamp(Value, pSettings[i].m_Min, pSettings[i].m_Max);
+	}
+}
+
+void ResetClientSettings()
+{
+	int Num = 0;
+	const SClientSetting *pSettings = ClientSettings(&Num);
+	for(int i = 0; i < Num; i++)
+		*pSettings[i].m_pValue = pSettings[i].m_Default;
+}
+
+} // namespace
+
 void CMenus::SetNeedSendInfo()
 {
 	if(m_Dummy)
@@ -51,7 +136,8 @@ void CMenus::RenderSettings(CUIRect MainView)
 		Localize("Sound"),
 		Localize("DDNet"),
 		Localize("Assets"),
-		Localize("Credits")};
+		Localize("Credits"),
+		CLIENT_MENU_NAME};
 	static CButtonContainer s_aTabButtons[SETTINGS_LENGTH];
 
 	for(int i = 0; i < SETTINGS_LENGTH; i++)
@@ -120,6 +206,11 @@ void CMenus::RenderSettings(CUIRect MainView)
 		GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_SETTINGS_CREDITS);
 		RenderSettingsCredits(MainView);
 	}
+			else if(g_Config.m_UiSettingsPage == SETTINGS_CLIENT)
+	{
+		GameClient()->m_MenuBackground.ChangePosition(CMenuBackground::POS_SETTINGS_DDNET);
+		RenderSettingsClient(MainView);
+	}
 	else
 	{
 		dbg_assert_failed("ui_settings_page invalid");
@@ -153,6 +244,121 @@ void CMenus::RenderSettings(CUIRect MainView)
 				Client()->Restart();
 			}
 		}
+	}
+}
+
+void CMenus::RenderSettingsClient(CUIRect MainView)
+{
+	static int s_Page = 0;
+	static CButtonContainer s_aPageButtons[4];
+	static CButtonContainer s_aSaveButtons[CLIENT_PRESET_SLOTS];
+	static CButtonContainer s_aLoadButtons[CLIENT_PRESET_SLOTS];
+	static CButtonContainer s_aClearButtons[CLIENT_PRESET_SLOTS];
+	static CButtonContainer s_ResetButton;
+
+	const float LineHeight = 20.0f;
+	const float RowGap = 5.0f;
+
+	CUIRect Title, PageBar;
+	MainView.HSplitTop(24.0f, &Title, &MainView);
+	Ui()->DoLabel(&Title, CLIENT_MENU_NAME, 20.0f, TEXTALIGN_ML);
+	MainView.HSplitTop(RowGap, nullptr, &MainView);
+
+	MainView.HSplitTop(25.0f, &PageBar, &MainView);
+	MainView.HSplitTop(RowGap * 2.0f, nullptr, &MainView);
+	const char *apPages[4] = {"Авойд", "Кагуне", "Молот", "Конфиги"};
+	const float PageWidth = PageBar.w / 4.0f;
+	for(int i = 0; i < 4; i++)
+	{
+		CUIRect Button;
+		PageBar.VSplitLeft(PageWidth, &Button, &PageBar);
+		if(DoButton_Menu(&s_aPageButtons[i], apPages[i], s_Page == i, &Button))
+			s_Page = i;
+	}
+
+	auto NextRow = [&](CUIRect *pRow) {
+		MainView.HSplitTop(LineHeight, pRow, &MainView);
+		MainView.HSplitTop(RowGap, nullptr, &MainView);
+	};
+	auto Toggle = [&](int *pValue, const char *pText) {
+		CUIRect Row;
+		NextRow(&Row);
+		if(DoButton_CheckBox(pValue, pText, *pValue, &Row))
+			*pValue = *pValue ? 0 : 1;
+	};
+	auto Slider = [&](int *pValue, const char *pText, int Min, int Max) {
+		CUIRect Row, Label;
+		NextRow(&Row);
+		Row.VSplitLeft(260.0f, &Label, &Row);
+		char aBuf[96];
+		str_format(aBuf, sizeof(aBuf), "%s: %d", pText, *pValue);
+		Ui()->DoLabel(&Label, aBuf, 14.0f, TEXTALIGN_ML);
+		Row.Draw(ColorRGBA(0.15f, 0.15f, 0.15f, 1.0f), IGraphics::CORNER_ALL, 1.0f);
+		ColorRGBA HandleColor(1.0f, 1.0f, 1.0f, 1.0f);
+		const float Norm = Max > Min ? (float)(*pValue - Min) / (float)(Max - Min) : 0.0f;
+		const float NewNorm = Ui()->DoScrollbarH(pValue, &Row, Norm, &HandleColor);
+		*pValue = Min + round_to_int(NewNorm * (float)(Max - Min));
+	};
+
+	if(s_Page == 0)
+	{
+		Toggle(&g_Config.m_ClAvoid, "Авойд (главный выключатель)");
+		Toggle(&g_Config.m_ClAvoidWalk, "Уходить от опасности ходьбой");
+		Toggle(&g_Config.m_ClAvoidJump, "Прыгать от опасности");
+		Toggle(&g_Config.m_ClAvoidHook, "Хукать от опасности");
+		Toggle(&g_Config.m_ClAvoidFilter, "Отменять мой хук и прыжок, если ведут в опасность");
+		Slider(&g_Config.m_ClAvoidHoldMax, "Макс. удержание хука (сек)", 1, 10);
+	}
+	else if(s_Page == 1)
+	{
+		Toggle(&g_Config.m_ClKagune, "Кагуне");
+		Slider(&g_Config.m_ClKaguneStyle, "Стиль (0 веер, 1 осьминог, 2 крылья, 3 хлысты)", 0, 3);
+		Slider(&g_Config.m_ClKaguneCount, "Количество", 1, 8);
+		Slider(&g_Config.m_ClKaguneWidth, "Толщина", 1, 20);
+		Slider(&g_Config.m_ClKaguneWave, "Волна", 0, 50);
+		Slider(&g_Config.m_ClKaguneLen, "Длина", 30, 300);
+		Slider(&g_Config.m_ClKaguneShimmer, "Блеск", 0, 100);
+		Slider(&g_Config.m_ClKaguneR, "Красный", 0, 255);
+		Slider(&g_Config.m_ClKaguneG, "Зелёный", 0, 255);
+		Slider(&g_Config.m_ClKaguneB, "Синий", 0, 255);
+	}
+	else if(s_Page == 2)
+	{
+		Toggle(&g_Config.m_ClHammerFx, "Эффект удара молотом");
+		Slider(&g_Config.m_ClHammerFxR, "Красный", 0, 255);
+		Slider(&g_Config.m_ClHammerFxG, "Зелёный", 0, 255);
+		Slider(&g_Config.m_ClHammerFxB, "Синий", 0, 255);
+		Slider(&g_Config.m_ClHammerFxSize, "Размер (%)", 25, 300);
+	}
+	else
+	{
+		char *apSlots[CLIENT_PRESET_SLOTS] = {g_Config.m_ClClientPreset1, g_Config.m_ClClientPreset2, g_Config.m_ClClientPreset3};
+		for(int i = 0; i < CLIENT_PRESET_SLOTS; i++)
+		{
+			CUIRect Row, Label, Button;
+			NextRow(&Row);
+			Row.VSplitLeft(140.0f, &Label, &Row);
+			char aBuf[64];
+			str_format(aBuf, sizeof(aBuf), "Слот %d%s", i + 1, apSlots[i][0] == '\0' ? " (пусто)" : "");
+			Ui()->DoLabel(&Label, aBuf, 14.0f, TEXTALIGN_ML);
+			Row.VSplitLeft(110.0f, &Button, &Row);
+			if(DoButton_Menu(&s_aSaveButtons[i], "Сохранить", 0, &Button))
+				SaveClientPreset(apSlots[i], sizeof(g_Config.m_ClClientPreset1));
+			Row.VSplitLeft(5.0f, nullptr, &Row);
+			Row.VSplitLeft(110.0f, &Button, &Row);
+			if(DoButton_Menu(&s_aLoadButtons[i], "Загрузить", 0, &Button))
+				LoadClientPreset(apSlots[i]);
+			Row.VSplitLeft(5.0f, nullptr, &Row);
+			Row.VSplitLeft(110.0f, &Button, &Row);
+			if(DoButton_Menu(&s_aClearButtons[i], "Очистить", 0, &Button))
+				apSlots[i][0] = '\0';
+		}
+		CUIRect ResetRow, ResetButton;
+		MainView.HSplitTop(RowGap, nullptr, &MainView);
+		NextRow(&ResetRow);
+		ResetRow.VSplitLeft(260.0f, &ResetButton, nullptr);
+		if(DoButton_Menu(&s_ResetButton, "Сбросить всё по умолчанию", 0, &ResetButton))
+			ResetClientSettings();
 	}
 }
 
