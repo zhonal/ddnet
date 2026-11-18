@@ -242,7 +242,7 @@ MACRO_CONFIG_STR(ClDummy7SkinEyes, dummy7_skin_eyes, protocol7::MAX_SKIN_ARRAY_S
 // MACRO_CONFIG_STR(ClCensorUrl, cl_censor_url, 100, "https://info.ddnet.org/censor.json", CFGFLAG_CLIENT | CFGFLAG_SAVE, "URL used to download words to censor (must start with https://)")
 
 MACRO_CONFIG_INT(UiPage, ui_page, 6, 6, 13, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Interface page")
-MACRO_CONFIG_INT(UiSettingsPage, ui_settings_page, 0, 0, 10, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Interface settings page")
+MACRO_CONFIG_INT(UiSettingsPage, ui_settings_page, 0, 0, 11, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Interface settings page")
 MACRO_CONFIG_INT(UiToolboxPage, ui_toolbox_page, 0, 0, 2, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Toolbox page")
 MACRO_CONFIG_STR(UiServerAddress, ui_server_address, 1024, "localhost:8303", CFGFLAG_CLIENT | CFGFLAG_SAVE | CFGFLAG_INSENSITIVE, "Interface server address")
 MACRO_CONFIG_INT(UiMousesens, ui_mousesens, 200, 1, 100000, CFGFLAG_SAVE | CFGFLAG_CLIENT, "Mouse sensitivity for menus/editor")
@@ -820,3 +820,11 @@ MACRO_CONFIG_INT(ClVideoRecorderFPS, cl_video_recorder_fps, 60, 1, 1000, CFGFLAG
  * Add config variables for mods below this comment to avoid merge conflicts.
  */
 MACRO_CONFIG_INT(ClAvoid, cl_avoid, 0, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Auto avoid freeze, spikes and teleports")
+MACRO_CONFIG_INT(ClAvoidWalk, cl_avoid_walk, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: steer away from danger")
+MACRO_CONFIG_INT(ClAvoidJump, cl_avoid_jump, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: jump away from danger")
+MACRO_CONFIG_INT(ClAvoidHook, cl_avoid_hook, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: hook away from danger")
+MACRO_CONFIG_INT(ClAvoidFilter, cl_avoid_filter, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: cancel your own hook or jump that would lead into danger")
+MACRO_CONFIG_INT(ClAvoidHoldMax, cl_avoid_hold_max, 3, 1, 10, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: maximum seconds to hold the hook")
+MACRO_CONFIG_STR(ClClientPreset1, cl_client_preset1, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 1")
+MACRO_CONFIG_STR(ClClientPreset2, cl_client_preset2, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 2")
+MACRO_CONFIG_STR(ClClientPreset3, cl_client_preset3, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 3")
