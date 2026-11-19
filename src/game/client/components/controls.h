@@ -65,5 +65,8 @@ private:
 	vec2 CursorWorldPos() const;
 	void SendPracticeTeleportToCursor(int Conn);
 	void ApplyAvoid(CNetObj_PlayerInput *pInput);
+	bool m_aAvoidHolding[NUM_DUMMIES] = {};
+	int m_aAvoidHoldStart[NUM_DUMMIES] = {};
+	int m_aAvoidBlockUntil[NUM_DUMMIES] = {};
 };
 #endif
