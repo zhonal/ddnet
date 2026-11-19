@@ -29,33 +29,35 @@ struct SClientSetting
 	int m_Min;
 	int m_Max;
 	int m_Default;
+	const char *m_pVar; // имя консольной команды
+	const char *m_pLabel; // подпись в меню
 };
 
 // Порядок важен: по нему настройки пишутся в пресет. Новые настройки добавляй ТОЛЬКО в конец списка.
 const SClientSetting *ClientSettings(int *pNum)
 {
 	static const SClientSetting s_aSettings[] = {
-		{&g_Config.m_ClAvoid, 0, 1, 0},
-		{&g_Config.m_ClAvoidWalk, 0, 1, 1},
-		{&g_Config.m_ClAvoidJump, 0, 1, 1},
-		{&g_Config.m_ClAvoidHook, 0, 1, 1},
-		{&g_Config.m_ClAvoidFilter, 0, 1, 1},
-		{&g_Config.m_ClAvoidHoldMax, 1, 10, 3},
-		{&g_Config.m_ClKagune, 0, 1, 1},
-		{&g_Config.m_ClKaguneR, 0, 255, 200},
-		{&g_Config.m_ClKaguneG, 0, 255, 10},
-		{&g_Config.m_ClKaguneB, 0, 255, 25},
-		{&g_Config.m_ClKaguneWidth, 1, 20, 6},
-		{&g_Config.m_ClKaguneCount, 1, 8, 5},
-		{&g_Config.m_ClKaguneWave, 0, 50, 14},
-		{&g_Config.m_ClKaguneLen, 30, 300, 100},
-		{&g_Config.m_ClKaguneStyle, 0, 3, 0},
-		{&g_Config.m_ClKaguneShimmer, 0, 100, 60},
-		{&g_Config.m_ClHammerFx, 0, 1, 1},
-		{&g_Config.m_ClHammerFxR, 0, 255, 255},
-		{&g_Config.m_ClHammerFxG, 0, 255, 120},
-		{&g_Config.m_ClHammerFxB, 0, 255, 20},
-		{&g_Config.m_ClHammerFxSize, 25, 300, 100},
+		{&g_Config.m_ClAvoid, 0, 1, 0, "cl_avoid", "Авойд"},
+		{&g_Config.m_ClAvoidWalk, 0, 1, 1, "cl_avoid_walk", "Авойд: ходьба"},
+		{&g_Config.m_ClAvoidJump, 0, 1, 1, "cl_avoid_jump", "Авойд: прыжок"},
+		{&g_Config.m_ClAvoidHook, 0, 1, 1, "cl_avoid_hook", "Авойд: хук"},
+		{&g_Config.m_ClAvoidFilter, 0, 1, 1, "cl_avoid_filter", "Авойд: отмена моих действий"},
+		{&g_Config.m_ClAvoidRange, 1, 10, 2, "cl_avoid_range", "Авойд: реакция, блоков"},
+		{&g_Config.m_ClKagune, 0, 1, 1, "cl_kagune", "Кагуне"},
+		{&g_Config.m_ClKaguneR, 0, 255, 200, "cl_kagune_r", "Кагуне: красный"},
+		{&g_Config.m_ClKaguneG, 0, 255, 10, "cl_kagune_g", "Кагуне: зелёный"},
+		{&g_Config.m_ClKaguneB, 0, 255, 25, "cl_kagune_b", "Кагуне: синий"},
+		{&g_Config.m_ClKaguneWidth, 1, 20, 6, "cl_kagune_width", "Кагуне: толщина"},
+		{&g_Config.m_ClKaguneCount, 1, 8, 5, "cl_kagune_count", "Кагуне: количество"},
+		{&g_Config.m_ClKaguneWave, 0, 50, 14, "cl_kagune_wave", "Кагуне: волна"},
+		{&g_Config.m_ClKaguneLen, 30, 300, 100, "cl_kagune_len", "Кагуне: длина"},
+		{&g_Config.m_ClKaguneStyle, 0, 3, 0, "cl_kagune_style", "Кагуне: стиль"},
+		{&g_Config.m_ClKaguneShimmer, 0, 100, 60, "cl_kagune_shimmer", "Кагуне: блеск"},
+		{&g_Config.m_ClHammerFx, 0, 1, 1, "cl_hammer_fx", "Молот: эффект"},
+		{&g_Config.m_ClHammerFxR, 0, 255, 255, "cl_hammer_fx_r", "Молот: красный"},
+		{&g_Config.m_ClHammerFxG, 0, 255, 120, "cl_hammer_fx_g", "Молот: зелёный"},
+		{&g_Config.m_ClHammerFxB, 0, 255, 20, "cl_hammer_fx_b", "Молот: синий"},
+		{&g_Config.m_ClHammerFxSize, 25, 300, 100, "cl_hammer_fx_size", "Молот: размер"},
 	};
 	*pNum = (int)(sizeof(s_aSettings) / sizeof(s_aSettings[0]));
 	return s_aSettings;
@@ -95,6 +97,15 @@ void ResetClientSettings()
 	const SClientSetting *pSettings = ClientSettings(&Num);
 	for(int i = 0; i < Num; i++)
 		*pSettings[i].m_pValue = pSettings[i].m_Default;
+}
+
+// Подсказка для списка команд: переключатели биндятся через toggle, у остальных показан диапазон.
+void FormatSettingHint(char *pBuf, int Size, const SClientSetting &Setting)
+{
+	if(Setting.m_Min == 0 && Setting.m_Max == 1)
+		std::snprintf(pBuf, Size, "bind X \"toggle %s 0 1\"", Setting.m_pVar);
+	else
+		std::snprintf(pBuf, Size, "%s %d..%d (по умолч. %d)", Setting.m_pVar, Setting.m_Min, Setting.m_Max, Setting.m_Default);
 }
 
 } // namespace
@@ -250,11 +261,14 @@ void CMenus::RenderSettings(CUIRect MainView)
 void CMenus::RenderSettingsClient(CUIRect MainView)
 {
 	static int s_Page = 0;
-	static CButtonContainer s_aPageButtons[4];
+	static int s_ListPage = 0;
+	static CButtonContainer s_aPageButtons[5];
 	static CButtonContainer s_aSaveButtons[CLIENT_PRESET_SLOTS];
 	static CButtonContainer s_aLoadButtons[CLIENT_PRESET_SLOTS];
 	static CButtonContainer s_aClearButtons[CLIENT_PRESET_SLOTS];
 	static CButtonContainer s_ResetButton;
+	static CButtonContainer s_ListPrevButton;
+	static CButtonContainer s_ListNextButton;
 
 	const float LineHeight = 20.0f;
 	const float RowGap = 5.0f;
@@ -266,9 +280,9 @@ void CMenus::RenderSettingsClient(CUIRect MainView)
 
 	MainView.HSplitTop(25.0f, &PageBar, &MainView);
 	MainView.HSplitTop(RowGap * 2.0f, nullptr, &MainView);
-	const char *apPages[4] = {"Авойд", "Кагуне", "Молот", "Конфиги"};
-	const float PageWidth = PageBar.w / 4.0f;
-	for(int i = 0; i < 4; i++)
+	const char *apPages[5] = {"Авойд", "Кагуне", "Молот", "Конфиги", "Пресеты"};
+	const float PageWidth = PageBar.w / 5.0f;
+	for(int i = 0; i < 5; i++)
 	{
 		CUIRect Button;
 		PageBar.VSplitLeft(PageWidth, &Button, &PageBar);
@@ -307,7 +321,7 @@ void CMenus::RenderSettingsClient(CUIRect MainView)
 		Toggle(&g_Config.m_ClAvoidJump, "Прыгать от опасности");
 		Toggle(&g_Config.m_ClAvoidHook, "Хукать от опасности");
 		Toggle(&g_Config.m_ClAvoidFilter, "Отменять мой хук и прыжок, если ведут в опасность");
-		Slider(&g_Config.m_ClAvoidHoldMax, "Макс. удержание хука (сек)", 1, 10);
+		Slider(&g_Config.m_ClAvoidRange, "Реакция за N блоков до фриза", 1, 10);
 	}
 	else if(s_Page == 1)
 	{
@@ -329,6 +343,44 @@ void CMenus::RenderSettingsClient(CUIRect MainView)
 		Slider(&g_Config.m_ClHammerFxG, "Зелёный", 0, 255);
 		Slider(&g_Config.m_ClHammerFxB, "Синий", 0, 255);
 		Slider(&g_Config.m_ClHammerFxSize, "Размер (%)", 25, 300);
+	}
+	else if(s_Page == 3)
+	{
+		CUIRect Hint, Hint2;
+		NextRow(&Hint);
+		Ui()->DoLabel(&Hint, "Консоль (F1): вместо X подставь клавишу, например f3", 13.0f, TEXTALIGN_ML);
+		NextRow(&Hint2);
+		Ui()->DoLabel(&Hint2, "Включить: команда 1, выключить: команда 0", 13.0f, TEXTALIGN_ML);
+
+		int Num = 0;
+		const SClientSetting *pSettings = ClientSettings(&Num);
+		const int PerPage = 7;
+		const int NumPages = (Num + PerPage - 1) / PerPage;
+		s_ListPage = std::clamp(s_ListPage, 0, NumPages - 1);
+		for(int i = s_ListPage * PerPage; i < Num && i < (s_ListPage + 1) * PerPage; i++)
+		{
+			CUIRect Row, Label;
+			NextRow(&Row);
+			Row.VSplitLeft(220.0f, &Label, &Row);
+			Ui()->DoLabel(&Label, pSettings[i].m_pLabel, 13.0f, TEXTALIGN_ML);
+			char aHint[128];
+			FormatSettingHint(aHint, sizeof(aHint), pSettings[i]);
+			Ui()->DoLabel(&Row, aHint, 13.0f, TEXTALIGN_ML);
+		}
+
+		CUIRect Nav, Button;
+		NextRow(&Nav);
+		Nav.VSplitLeft(60.0f, &Button, &Nav);
+		if(DoButton_Menu(&s_ListPrevButton, "<", 0, &Button))
+			s_ListPage = (s_ListPage + NumPages - 1) % NumPages;
+		Nav.VSplitLeft(5.0f, nullptr, &Nav);
+		Nav.VSplitLeft(60.0f, &Button, &Nav);
+		if(DoButton_Menu(&s_ListNextButton, ">", 0, &Button))
+			s_ListPage = (s_ListPage + 1) % NumPages;
+		Nav.VSplitLeft(10.0f, nullptr, &Nav);
+		char aPage[32];
+		str_format(aPage, sizeof(aPage), "Стр. %d из %d", s_ListPage + 1, NumPages);
+		Ui()->DoLabel(&Nav, aPage, 13.0f, TEXTALIGN_ML);
 	}
 	else
 	{
