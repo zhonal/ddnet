@@ -33,6 +33,8 @@ constexpr int AVOID_HOOK_SIM_TICKS = 40;
 constexpr int AVOID_RAYS = 48;
 constexpr float AVOID_HOOK_START = CCharacterCore::PhysicalSize() * 1.5f;
 constexpr float AVOID_HOOK_NEAR = 46.0f;
+constexpr float AVOID_TILE_SIZE = 32.0f;
+constexpr int AVOID_MAX_HOLD_SECONDS = 3;
 
 // Физика. Значения по умолчанию -- стандартные для DDNet (по памяти, не измерены на твоей сборке).
 // ReadTune заменяет их текущими значениями сервера, если параметр с таким именем найден.
@@ -135,13 +137,15 @@ void SimStep(const CCollision *pCollision, const SAvoidTune &T, vec2 *pPos, vec2
 }
 
 // Тик, на котором тия впервые окажется в опасной клетке, или -1, если за Ticks тиков этого не будет.
-int SimDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int Ticks)
+// Если MaxDist больше нуля, опасность дальше MaxDist пикселей от начальной позиции в расчёт не берётся.
+int SimDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int Ticks, float MaxDist = 0.0f)
 {
+	const vec2 Start = Pos;
 	for(int Tick = 1; Tick <= Ticks; Tick++)
 	{
 		SimStep(pCollision, T, &Pos, &Vel, Dir);
 		if(IsDangerBox(pCollision, Pos))
-			return Tick;
+			return (MaxDist <= 0.0f || distance(Start, Pos) <= MaxDist) ? Tick : -1;
 	}
 	return -1;
 }
@@ -248,11 +252,11 @@ struct SAvoidPlan
 // Возвращает true, если тия при текущем вводе попадёт в опасность в ближайшие тики.
 // Порядок спасения: сменить направление, прыгнуть, зацепиться хуком. Если ничего не помогает,
 // ввод игрока остаётся как есть.
-bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int UserDir, bool CanJump, bool AllowWalk, bool AllowJump, bool AllowHook, SAvoidPlan *pPlan)
+bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int UserDir, bool CanJump, bool AllowWalk, bool AllowJump, bool AllowHook, float ReactDist, SAvoidPlan *pPlan)
 {
 	*pPlan = SAvoidPlan();
 	pPlan->m_Direction = UserDir;
-	const int Base = SimDangerTick(pCollision, T, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS);
+	const int Base = SimDangerTick(pCollision, T, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist);
 	if(Base < 0)
 		return false;
 
@@ -705,6 +709,7 @@ void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 	const vec2 Pos = Core.m_Pos;
 	const vec2 Vel = Core.m_Vel;
 	const int Tick = Client()->PredGameTick(Dummy);
+	const float ReactDist = (float)g_Config.m_ClAvoidRange * AVOID_TILE_SIZE;
 	const int UserDir = pInput->m_Direction;
 	const int LiveJump = pInput->m_Jump;
 	const int LiveHook = pInput->m_Hook;
@@ -718,13 +723,13 @@ void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 	if(m_aAvoidHolding[Dummy] && HookAllowed && HookBusy)
 	{
 		// Держим хук, пока без него тия всё ещё попадала бы в опасность.
-		Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS) >= 0;
+Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist) >= 0;
 		Plan.m_Direction = UserDir;
 		Plan.m_Hook = Threat;
 	}
 	else
 	{
-		Threat = PlanAvoid(pCollision, Tune, Pos, Vel, UserDir, CanJump, g_Config.m_ClAvoidWalk != 0, g_Config.m_ClAvoidJump != 0, HookAllowed, &Plan);
+		Threat = PlanAvoid(pCollision, Tune, Pos, Vel, UserDir, CanJump, g_Config.m_ClAvoidWalk != 0, g_Config.m_ClAvoidJump != 0, HookAllowed, ReactDist, &Plan);
 	}
 
 	bool Handled = false; // авойд сам управляет прыжком или хуком в этот тик
@@ -738,7 +743,7 @@ void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 				m_aAvoidHolding[Dummy] = true;
 				m_aAvoidHoldStart[Dummy] = Tick;
 			}
-			if(Tick - m_aAvoidHoldStart[Dummy] > g_Config.m_ClAvoidHoldMax * Client()->GameTickSpeed())
+			if(Tick - m_aAvoidHoldStart[Dummy] > AVOID_MAX_HOLD_SECONDS * Client()->GameTickSpeed())
 			{
 				m_aAvoidHolding[Dummy] = false;
 				m_aAvoidBlockUntil[Dummy] = Tick + 10;
