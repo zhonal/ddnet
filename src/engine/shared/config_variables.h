@@ -824,7 +824,7 @@ MACRO_CONFIG_INT(ClAvoidWalk, cl_avoid_walk, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_S
 MACRO_CONFIG_INT(ClAvoidJump, cl_avoid_jump, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: jump away from danger")
 MACRO_CONFIG_INT(ClAvoidHook, cl_avoid_hook, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: hook away from danger")
 MACRO_CONFIG_INT(ClAvoidFilter, cl_avoid_filter, 1, 0, 1, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: cancel your own hook or jump that would lead into danger")
-MACRO_CONFIG_INT(ClAvoidHoldMax, cl_avoid_hold_max, 3, 1, 10, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: maximum seconds to hold the hook")
+MACRO_CONFIG_INT(ClAvoidRange, cl_avoid_range, 2, 1, 10, CFGFLAG_CLIENT | CFGFLAG_SAVE, "Avoid: react when danger is this many blocks away")
 MACRO_CONFIG_STR(ClClientPreset1, cl_client_preset1, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 1")
 MACRO_CONFIG_STR(ClClientPreset2, cl_client_preset2, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 2")
 MACRO_CONFIG_STR(ClClientPreset3, cl_client_preset3, 256, "", CFGFLAG_CLIENT | CFGFLAG_SAVE, "Saved client preset 3")
