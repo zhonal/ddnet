@@ -320,7 +320,7 @@ void CMenus::RenderSettingsClient(CUIRect MainView)
 		Toggle(&g_Config.m_ClAvoidWalk, "Уходить от опасности ходьбой");
 		Toggle(&g_Config.m_ClAvoidJump, "Прыгать от опасности");
 		Toggle(&g_Config.m_ClAvoidHook, "Хукать от опасности");
-		Toggle(&g_Config.m_ClAvoidFilter, "Отменять мой хук и прыжок, если ведут в опасность");
+		Toggle(&g_Config.m_ClAvoidFilter, "Помогать с моим хуком и прыжком (отпускать хук, блок прыжка)");
 		Slider(&g_Config.m_ClAvoidRange, "Реакция за N блоков до фриза", 1, 10);
 	}
 	else if(s_Page == 1)
