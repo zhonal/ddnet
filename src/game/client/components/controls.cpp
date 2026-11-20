@@ -29,8 +29,9 @@
 namespace {
 
 constexpr int AVOID_LOOKAHEAD_TICKS = 30;
-constexpr int AVOID_HOOK_SIM_TICKS = 40;
-constexpr int AVOID_RAYS = 48;
+constexpr int AVOID_HOOK_SIM_TICKS = 32;
+constexpr int AVOID_RAYS = 32;
+constexpr int AVOID_HOOK_WAIT_TICKS = 4; // насколько заранее нужно знать, что хук ещё успеет спасти
 constexpr float AVOID_HOOK_START = CCharacterCore::PhysicalSize() * 1.5f;
 constexpr float AVOID_HOOK_NEAR = 46.0f;
 constexpr float AVOID_TILE_SIZE = 32.0f;
@@ -150,10 +151,10 @@ int SimDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, v
 	return -1;
 }
 
-int SimJumpDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, float Impulse, int Dir, int Ticks)
+int SimJumpDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, float Impulse, int Dir, int Ticks, float MaxDist = 0.0f)
 {
 	Vel.y = -Impulse;
-	return SimDangerTick(pCollision, T, Pos, Vel, Dir, Ticks);
+	return SimDangerTick(pCollision, T, Pos, Vel, Dir, Ticks, MaxDist);
 }
 
 int HookFlightTicks(const SAvoidTune &T, float Dist)
@@ -164,8 +165,9 @@ int HookFlightTicks(const SAvoidTune &T, float Dist)
 }
 
 // Тия цепляется за HookPoint через FlightTicks тиков и подтягивается к нему.
-int SimHookDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, vec2 HookPoint, int FlightTicks, int Dir, int Ticks)
+int SimHookDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, vec2 HookPoint, int FlightTicks, int Dir, int Ticks, float MaxDist = 0.0f)
 {
+	const vec2 Start = Pos;
 	for(int Tick = 1; Tick <= Ticks; Tick++)
 	{
 		if(Tick > FlightTicks && distance(HookPoint, Pos) > AVOID_HOOK_NEAR)
@@ -183,7 +185,7 @@ int SimHookDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Po
 		}
 		SimStep(pCollision, T, &Pos, &Vel, Dir);
 		if(IsDangerBox(pCollision, Pos))
-			return Tick;
+			return (MaxDist <= 0.0f || distance(Start, Pos) <= MaxDist) ? Tick : -1;
 	}
 	return -1;
 }
@@ -201,8 +203,8 @@ bool RayHook(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 D
 }
 
 // Ближайшая стена, за которую можно зацепиться и не попасть в опасность. Если полностью безопасной
-// нет, берёт ту, что оттягивает опасность дальше всего (но заметно лучше, чем без хука).
-bool FindHookTarget(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int BaselineTick, vec2 *pTarget)
+// нет и SafeOnly выключен, берёт ту, что оттягивает опасность дальше всего (но заметно лучше, чем без хука).
+bool FindHookTarget(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, int BaselineTick, bool SafeOnly, vec2 *pTarget)
 {
 	bool Found = false;
 	bool BestSafe = false;
@@ -217,7 +219,7 @@ bool FindHookTarget(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos,
 		const float Dist = distance(Pos, Hit);
 		const int Tick = SimHookDangerTick(pCollision, T, Pos, Vel, Hit, HookFlightTicks(T, Dist), Dir, AVOID_HOOK_SIM_TICKS);
 		const bool Safe = Tick < 0;
-		if(!Safe && Tick <= BaselineTick + 2)
+		if(!Safe && (SafeOnly || Tick <= BaselineTick + 2))
 			continue;
 
 		bool Take = false;
@@ -241,41 +243,98 @@ bool FindHookTarget(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos,
 	return Found;
 }
 
+// Тик опасности при текущем вводе. Если игрок держит зацепленный хук, учитывается его подтяжка.
+int BaselineDangerTick(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir, bool HookPulling, vec2 HookPoint, float MaxDist)
+{
+	if(HookPulling)
+		return SimHookDangerTick(pCollision, T, Pos, Vel, HookPoint, 0, Dir, AVOID_LOOKAHEAD_TICKS, MaxDist);
+	return SimDangerTick(pCollision, T, Pos, Vel, Dir, AVOID_LOOKAHEAD_TICKS, MaxDist);
+}
+
+// Можно ли ещё немного подождать: через AVOID_HOOK_WAIT_TICKS тиков хук всё ещё будет безопасно спасать.
+bool HookCanWait(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int Dir)
+{
+	for(int i = 0; i < AVOID_HOOK_WAIT_TICKS; i++)
+	{
+		SimStep(pCollision, T, &Pos, &Vel, Dir);
+		if(IsDangerBox(pCollision, Pos))
+			return false;
+	}
+	vec2 Target;
+	return FindHookTarget(pCollision, T, Pos, Vel, Dir, -1, true, &Target);
+}
+
 struct SAvoidPlan
 {
 	int m_Direction = 0;
 	bool m_Jump = false;
-	bool m_Hook = false;
+	bool m_Hook = false; // выпустить хук в m_HookTarget (или держать уже выпущенный)
+	bool m_Release = false; // отпустить хук, который игрок держит сам
 	vec2 m_HookTarget = vec2(0.0f, 0.0f);
 };
 
-// Возвращает true, если тия при текущем вводе попадёт в опасность в ближайшие тики.
-// Порядок спасения: сменить направление, прыгнуть, зацепиться хуком. Если ничего не помогает,
-// ввод игрока остаётся как есть.
-bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int UserDir, bool CanJump, bool AllowWalk, bool AllowJump, bool AllowHook, float ReactDist, SAvoidPlan *pPlan)
+// Возвращает true, если нужно вмешаться. Фриз дальше радиуса ReactDist игнорируется, кроме одного случая:
+// хук в воздухе начинается заранее, ровно когда подождать ещё 4 тика уже нельзя.
+// Порядок спасения: на земле ходьба, прыжок, хук; в воздухе ходьба, хук, прыжок.
+bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2 Vel, int UserDir, bool CanJump, bool AllowWalk, bool AllowJump, bool AllowHook, float ReactDist, bool HookPulling, vec2 HookPoint, SAvoidPlan *pPlan)
 {
 	*pPlan = SAvoidPlan();
 	pPlan->m_Direction = UserDir;
-	const int Base = SimDangerTick(pCollision, T, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist);
-	if(Base < 0)
+	const int BaseFar = BaselineDangerTick(pCollision, T, Pos, Vel, UserDir, HookPulling, HookPoint, 0.0f);
+	if(BaseFar < 0)
 		return false;
+	const int BaseNear = BaselineDangerTick(pCollision, T, Pos, Vel, UserDir, HookPulling, HookPoint, ReactDist);
+	const bool Grounded = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize());
 
-	if(AllowWalk)
+	if(BaseNear < 0)
 	{
-		const int aDirs[2] = {UserDir == 0 ? -1 : 0, UserDir == 0 ? 1 : -UserDir};
+		if(Grounded || !AllowHook || HookPulling)
+			return false;
+		vec2 Target;
+		if(!FindHookTarget(pCollision, T, Pos, Vel, UserDir, BaseFar, true, &Target) || HookCanWait(pCollision, T, Pos, Vel, UserDir))
+			return false;
+		pPlan->m_Hook = true;
+		pPlan->m_HookTarget = Target;
+		return true;
+	}
+
+	// Игрок тянется своим хуком к опасности: сначала пробуем просто отпустить.
+	if(HookPulling && SimDangerTick(pCollision, T, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist) < 0)
+	{
+		pPlan->m_Release = true;
+		return true;
+	}
+
+	auto TryWalk = [&]() {
+		int aDirs[2];
+		if(std::fabs(Vel.x) > 0.5f)
+		{
+			aDirs[0] = Vel.x > 0.0f ? -1 : 1; // против движения: так сопротивляемся толчку
+			aDirs[1] = 0;
+		}
+		else if(UserDir != 0)
+		{
+			aDirs[0] = 0;
+			aDirs[1] = -UserDir;
+		}
+		else
+		{
+			aDirs[0] = -1;
+			aDirs[1] = 1;
+		}
 		for(int Dir : aDirs)
 		{
 			if(SimDangerTick(pCollision, T, Pos, Vel, Dir, AVOID_LOOKAHEAD_TICKS) < 0)
 			{
 				pPlan->m_Direction = Dir;
+				pPlan->m_Release = HookPulling;
 				return true;
 			}
 		}
-	}
-
-	if(AllowJump && CanJump)
-	{
-		const float Impulse = pCollision->IsOnGround(Pos, CCharacterCore::PhysicalSize()) ? T.m_GroundJump : T.m_AirJump;
+		return false;
+	};
+	auto TryJump = [&]() {
+		const float Impulse = Grounded ? T.m_GroundJump : T.m_AirJump;
 		const int aDirs[3] = {UserDir, UserDir == 0 ? -1 : 0, UserDir == 0 ? 1 : -UserDir};
 		for(int Dir : aDirs)
 		{
@@ -283,25 +342,39 @@ bool PlanAvoid(const CCollision *pCollision, const SAvoidTune &T, vec2 Pos, vec2
 			{
 				pPlan->m_Direction = Dir;
 				pPlan->m_Jump = true;
+				pPlan->m_Release = HookPulling;
 				return true;
 			}
 		}
-	}
-
-	if(AllowHook)
-	{
+		return false;
+	};
+	auto TryHook = [&](bool SafeOnly) {
+		if(!AllowHook || HookPulling)
+			return false;
 		vec2 Target;
-		if(FindHookTarget(pCollision, T, Pos, Vel, UserDir, Base, &Target))
-		{
-			pPlan->m_Hook = true;
-			pPlan->m_HookTarget = Target;
+		if(!FindHookTarget(pCollision, T, Pos, Vel, UserDir, BaseNear, SafeOnly, &Target))
+			return false;
+		pPlan->m_Hook = true;
+		pPlan->m_HookTarget = Target;
+		return true;
+	};
+
+	if(Grounded)
+	{
+		if((AllowWalk && TryWalk()) || (AllowJump && CanJump && TryJump()) || TryHook(false))
 			return true;
-		}
 	}
+	else
+	{
+		if((AllowWalk && TryWalk()) || TryHook(true) || (AllowJump && CanJump && TryJump()) || TryHook(false))
+			return true;
+	}
+	*pPlan = SAvoidPlan();
+	pPlan->m_Direction = UserDir;
 	return true;
 }
 
-} // namespacevoid CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
+} // namespace
 CControls::CControls()
 {
 	mem_zero(&m_aLastData, sizeof(m_aLastData));
@@ -717,22 +790,23 @@ void CControls::ApplyAvoid(CNetObj_PlayerInput *pInput)
 	const bool CanJump = OnGround || (Core.m_Jumped & 2) == 0;
 	const bool HookBusy = Core.m_HookState == HOOK_GRABBED || Core.m_HookState == HOOK_FLYING;
 	const bool HookAllowed = g_Config.m_ClAvoidHook != 0 && Tick >= m_aAvoidBlockUntil[Dummy];
+	const bool UserHookPulling = g_Config.m_ClAvoidFilter != 0 && LiveHook != 0 && Core.m_HookState == HOOK_GRABBED && !m_aAvoidHolding[Dummy];
 
 	SAvoidPlan Plan;
 	bool Threat;
 	if(m_aAvoidHolding[Dummy] && HookAllowed && HookBusy)
 	{
-		// Держим хук, пока без него тия всё ещё попадала бы в опасность.
-Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist) >= 0;
+		// Держим свой хук, пока без него тия всё ещё попадала бы в опасность рядом.
+		Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICKS, ReactDist) >= 0;
 		Plan.m_Direction = UserDir;
 		Plan.m_Hook = Threat;
 	}
 	else
 	{
-		Threat = PlanAvoid(pCollision, Tune, Pos, Vel, UserDir, CanJump, g_Config.m_ClAvoidWalk != 0, g_Config.m_ClAvoidJump != 0, HookAllowed, ReactDist, &Plan);
+		Threat = PlanAvoid(pCollision, Tune, Pos, Vel, UserDir, CanJump, g_Config.m_ClAvoidWalk != 0, g_Config.m_ClAvoidJump != 0, HookAllowed, ReactDist, UserHookPulling, Core.m_HookPos, &Plan);
 	}
 
-	bool Handled = false; // авойд сам управляет прыжком или хуком в этот тик
+	bool AvoidJumps = false;
 	if(Threat)
 	{
 		pInput->m_Direction = Plan.m_Direction;
@@ -756,16 +830,20 @@ Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICK
 					pInput->m_TargetY = round_to_int(Plan.m_HookTarget.y - Pos.y);
 				}
 				pInput->m_Hook = 1;
-				Handled = true;
 			}
 		}
 		else
 		{
 			m_aAvoidHolding[Dummy] = false;
+			if(Plan.m_Release)
+			{
+				pInput->m_Hook = 0;
+				m_aAvoidReleaseUntil[Dummy] = Tick + 10;
+			}
 			if(Plan.m_Jump)
 			{
 				pInput->m_Jump = m_aLastData[Dummy].m_Jump == 0 ? 1 : 0;
-				Handled = true;
+				AvoidJumps = true;
 			}
 		}
 	}
@@ -774,39 +852,16 @@ Threat = SimDangerTick(pCollision, Tune, Pos, Vel, UserDir, AVOID_LOOKAHEAD_TICK
 		m_aAvoidHolding[Dummy] = false;
 	}
 
-	// Отмена твоих собственных прыжка и хука, если они ведут в опасность.
-	if(g_Config.m_ClAvoidFilter && !Handled)
+	// Сразу после отпускания не даём твоему зажатому хуку тут же зацепиться снова.
+	if(Tick < m_aAvoidReleaseUntil[Dummy] && !(Threat && Plan.m_Hook))
+		pInput->m_Hook = 0;
+
+	// Прыжок блокируется только если он ведёт во фриз в пределах радиуса реакции.
+	if(g_Config.m_ClAvoidFilter && !AvoidJumps && LiveJump && CanJump)
 	{
-		const int Dir = pInput->m_Direction;
-		if(LiveJump && CanJump)
-		{
-			const float Impulse = OnGround ? Tune.m_GroundJump : Tune.m_AirJump;
-			if(SimJumpDangerTick(pCollision, Tune, Pos, Vel, Impulse, Dir, AVOID_LOOKAHEAD_TICKS) >= 0)
-				pInput->m_Jump = 0;
-		}
-		if(LiveHook)
-		{
-			vec2 HookPoint(0.0f, 0.0f);
-			int Flight = 0;
-			bool Have = false;
-			if(Core.m_HookState == HOOK_GRABBED)
-			{
-				HookPoint = Core.m_HookPos;
-				Have = true;
-			}
-			else
-			{
-				const vec2 Aim((float)pInput->m_TargetX, (float)pInput->m_TargetY);
-				if(length(Aim) > 0.5f)
-				{
-					Have = RayHook(pCollision, Tune, Pos, normalize(Aim), &HookPoint);
-					if(Have)
-						Flight = HookFlightTicks(Tune, distance(Pos, HookPoint));
-				}
-			}
-			if(Have && SimHookDangerTick(pCollision, Tune, Pos, Vel, HookPoint, Flight, Dir, AVOID_HOOK_SIM_TICKS) >= 0)
-				pInput->m_Hook = 0;
-		}
+		const float Impulse = OnGround ? Tune.m_GroundJump : Tune.m_AirJump;
+		if(SimJumpDangerTick(pCollision, Tune, Pos, Vel, Impulse, pInput->m_Direction, AVOID_LOOKAHEAD_TICKS, ReactDist) >= 0)
+			pInput->m_Jump = 0;
 	}
 }
 
