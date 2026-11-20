@@ -68,5 +68,6 @@ private:
 	bool m_aAvoidHolding[NUM_DUMMIES] = {};
 	int m_aAvoidHoldStart[NUM_DUMMIES] = {};
 	int m_aAvoidBlockUntil[NUM_DUMMIES] = {};
+	int m_aAvoidReleaseUntil[NUM_DUMMIES] = {};
 };
 #endif
